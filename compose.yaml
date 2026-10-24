@@ -1,0 +1,44 @@
+services:
+  miner:
+    image: robo-minerador/miner:py3.12.9-uv0.13.5
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: docker/miner.Dockerfile
+    environment:
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      DOCKER_HOST: unix:///var/run/docker.sock
+    volumes:
+      - miner-workspace:/workspace
+      - miner-evidence:/evidence
+      - /var/run/docker.sock:/var/run/docker.sock
+      - type: bind
+        source: ./config/environments.lock.json
+        target: /app/config/environments.lock.json
+        read_only: true
+        bind:
+          create_host_path: false
+    networks: [egress, helper]
+  analyzer:
+    profiles: [analyzer]
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: docker/analyzer.Dockerfile
+    volumes:
+      - miner-workspace:/workspace:ro
+    networks: [helper]
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+volumes:
+  miner-workspace:
+    name: miner-workspace
+  miner-evidence:
+    name: miner-evidence
+networks:
+  egress: {}
+  helper:
+    internal: true

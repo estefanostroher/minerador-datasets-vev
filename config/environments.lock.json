@@ -1,0 +1,229 @@
+{
+  "bases": {
+    "node20": {
+      "image_id": "sha256:5cfa999422613d3b34f766cbb814d964cbfcb76aaf3607e805da21cccb352bac",
+      "ref": "node@sha256:5cfa999422613d3b34f766cbb814d964cbfcb76aaf3607e805da21cccb352bac",
+      "source": "node:20.19.0-bookworm-slim"
+    },
+    "node22": {
+      "image_id": "sha256:e21fc383b50d5347dc7a9f1cae45b8f4e2f0d39f7ade28e4eef7d2934522b752",
+      "ref": "node@sha256:e21fc383b50d5347dc7a9f1cae45b8f4e2f0d39f7ade28e4eef7d2934522b752",
+      "source": "node:22.22.3-bookworm-slim"
+    },
+    "node24": {
+      "image_id": "sha256:7b0f9cbb3f88da0e67873be5efcf38ce79ea25cfbb4986fad55a446af484e7c9",
+      "ref": "node@sha256:7b0f9cbb3f88da0e67873be5efcf38ce79ea25cfbb4986fad55a446af484e7c9",
+      "source": "node:24.0.0-bookworm-slim"
+    },
+    "python": {
+      "image_id": "sha256:48a11b7ba705fd53bf15248d1f94d36c39549903c5d59edcfa2f3f84126e7b44",
+      "ref": "python@sha256:48a11b7ba705fd53bf15248d1f94d36c39549903c5d59edcfa2f3f84126e7b44",
+      "source": "python:3.12.9-slim-bookworm"
+    }
+  },
+  "platform": "linux/amd64",
+  "runtimes": {
+    "miner": {
+      "base": "python",
+      "image_id": "sha256:09cda77dd1784995572679faee8ab16e345af412b26b7282bef37cd976157c9a",
+      "outputs": {
+        "python": "Python 3.12.9",
+        "uv": "uv 0.13.5 (x86_64-unknown-linux-gnu)"
+      },
+      "recipe_hash": "833145f06aecb76954d5e4b161c2cbf8f02fa1116b0300d1aae05a0ee0c3d181",
+      "tag": "robo-minerador/miner:py3.12.9-uv0.13.5",
+      "versions": {
+        "python": "3.12.9",
+        "uv": "0.13.5"
+      }
+    },
+    "node20-npm": {
+      "base": "node20",
+      "image_id": "sha256:3171f30f5fae56e0fbb85428c55e650859b7be87a63177c472f25eca1f7c391e",
+      "outputs": {
+        "node": "v20.19.0",
+        "npm": "10.8.2"
+      },
+      "recipe_hash": "cca4381cf45e860b8da91d9158a7be10d6eeb1bc05382f266a01693f7dc28f83",
+      "tag": "robo-minerador/runner:node20.19.0-npm-10.8.2",
+      "versions": {
+        "node": "20.19.0",
+        "npm": "10.8.2"
+      }
+    },
+    "node20-pnpm": {
+      "base": "node20",
+      "image_id": "sha256:3438c38bad8e6032005f7a0afed44002d0fd42908187f94a770942dfbe80b1e8",
+      "outputs": {
+        "node": "v20.19.0",
+        "npm": "10.8.2",
+        "pnpm": "9.15.5"
+      },
+      "recipe_hash": "cca4381cf45e860b8da91d9158a7be10d6eeb1bc05382f266a01693f7dc28f83",
+      "tag": "robo-minerador/runner:node20.19.0-pnpm-9.15.5",
+      "versions": {
+        "node": "20.19.0",
+        "npm": "10.8.2",
+        "pnpm": "9.15.5"
+      }
+    },
+    "node20-yarn1": {
+      "base": "node20",
+      "image_id": "sha256:91e7e6f1ae3aabf5f10e3b26b8f4c6607f1668145fecda8e4fcb03b4bc6988d3",
+      "outputs": {
+        "node": "v20.19.0",
+        "npm": "10.8.2",
+        "yarn": "1.22.22"
+      },
+      "recipe_hash": "cca4381cf45e860b8da91d9158a7be10d6eeb1bc05382f266a01693f7dc28f83",
+      "tag": "robo-minerador/runner:node20.19.0-yarn1-1.22.22",
+      "versions": {
+        "node": "20.19.0",
+        "npm": "10.8.2",
+        "yarn": "1.22.22"
+      }
+    },
+    "node20-yarn4": {
+      "base": "node20",
+      "image_id": "sha256:92f1998bf6d0dc41f8d8b94978d89fc05375a6cff3ed68f5f988c95ea83398ba",
+      "outputs": {
+        "node": "v20.19.0",
+        "npm": "10.8.2",
+        "yarn": "4.6.0"
+      },
+      "recipe_hash": "cca4381cf45e860b8da91d9158a7be10d6eeb1bc05382f266a01693f7dc28f83",
+      "tag": "robo-minerador/runner:node20.19.0-yarn4-4.6.0",
+      "versions": {
+        "node": "20.19.0",
+        "npm": "10.8.2",
+        "yarn": "4.6.0"
+      }
+    },
+    "node22-npm": {
+      "base": "node22",
+      "image_id": "sha256:0ef1f1bf05cfc337eccec343668777af3f8f8dbd060e2ab1aa03a3ef625caa52",
+      "outputs": {
+        "node": "v22.22.3",
+        "npm": "10.8.2"
+      },
+      "recipe_hash": "cca4381cf45e860b8da91d9158a7be10d6eeb1bc05382f266a01693f7dc28f83",
+      "tag": "robo-minerador/runner:node22.22.3-npm-10.8.2",
+      "versions": {
+        "node": "22.22.3",
+        "npm": "10.8.2"
+      }
+    },
+    "node22-pnpm": {
+      "base": "node22",
+      "image_id": "sha256:5f5ac44f20d3ea34d916bd7d9e5e62daf179968b4dfcb51a38575c7b142bb2cc",
+      "outputs": {
+        "node": "v22.22.3",
+        "npm": "10.8.2",
+        "pnpm": "9.15.5"
+      },
+      "recipe_hash": "cca4381cf45e860b8da91d9158a7be10d6eeb1bc05382f266a01693f7dc28f83",
+      "tag": "robo-minerador/runner:node22.22.3-pnpm-9.15.5",
+      "versions": {
+        "node": "22.22.3",
+        "npm": "10.8.2",
+        "pnpm": "9.15.5"
+      }
+    },
+    "node22-yarn1": {
+      "base": "node22",
+      "image_id": "sha256:c6086ec2455cca70fac41006132dc9b24c46d331090f231311fc5c92c0516aca",
+      "outputs": {
+        "node": "v22.22.3",
+        "npm": "10.8.2",
+        "yarn": "1.22.22"
+      },
+      "recipe_hash": "cca4381cf45e860b8da91d9158a7be10d6eeb1bc05382f266a01693f7dc28f83",
+      "tag": "robo-minerador/runner:node22.22.3-yarn1-1.22.22",
+      "versions": {
+        "node": "22.22.3",
+        "npm": "10.8.2",
+        "yarn": "1.22.22"
+      }
+    },
+    "node22-yarn4": {
+      "base": "node22",
+      "image_id": "sha256:9e0a83aa3edf894b6cf15fcbd8ee2cc4c1b3463f9f8d1b6da5cfa1177eba24e7",
+      "outputs": {
+        "node": "v22.22.3",
+        "npm": "10.8.2",
+        "yarn": "4.6.0"
+      },
+      "recipe_hash": "cca4381cf45e860b8da91d9158a7be10d6eeb1bc05382f266a01693f7dc28f83",
+      "tag": "robo-minerador/runner:node22.22.3-yarn4-4.6.0",
+      "versions": {
+        "node": "22.22.3",
+        "npm": "10.8.2",
+        "yarn": "4.6.0"
+      }
+    },
+    "node24-npm": {
+      "base": "node24",
+      "image_id": "sha256:d55be5d59f9c86333192b279a7c8e8ba36db6429073badd07172b688893e015a",
+      "outputs": {
+        "node": "v24.0.0",
+        "npm": "10.8.2"
+      },
+      "recipe_hash": "cca4381cf45e860b8da91d9158a7be10d6eeb1bc05382f266a01693f7dc28f83",
+      "tag": "robo-minerador/runner:node24.0.0-npm-10.8.2",
+      "versions": {
+        "node": "24.0.0",
+        "npm": "10.8.2"
+      }
+    },
+    "node24-pnpm": {
+      "base": "node24",
+      "image_id": "sha256:08be15b83f5575415ebfbbcddefbeb304fb0d54fd97c917d465decf8d006f5ec",
+      "outputs": {
+        "node": "v24.0.0",
+        "npm": "10.8.2",
+        "pnpm": "9.15.5"
+      },
+      "recipe_hash": "cca4381cf45e860b8da91d9158a7be10d6eeb1bc05382f266a01693f7dc28f83",
+      "tag": "robo-minerador/runner:node24.0.0-pnpm-9.15.5",
+      "versions": {
+        "node": "24.0.0",
+        "npm": "10.8.2",
+        "pnpm": "9.15.5"
+      }
+    },
+    "node24-yarn1": {
+      "base": "node24",
+      "image_id": "sha256:3407dcba90d7de260234895526013b210bc4bae538debf0f9c7810917bcc16bd",
+      "outputs": {
+        "node": "v24.0.0",
+        "npm": "10.8.2",
+        "yarn": "1.22.22"
+      },
+      "recipe_hash": "cca4381cf45e860b8da91d9158a7be10d6eeb1bc05382f266a01693f7dc28f83",
+      "tag": "robo-minerador/runner:node24.0.0-yarn1-1.22.22",
+      "versions": {
+        "node": "24.0.0",
+        "npm": "10.8.2",
+        "yarn": "1.22.22"
+      }
+    },
+    "node24-yarn4": {
+      "base": "node24",
+      "image_id": "sha256:a7436b82389185a3be4f8d0cbbb8f8a1d7e00202c466e4a0951be8afce0cd85b",
+      "outputs": {
+        "node": "v24.0.0",
+        "npm": "10.8.2",
+        "yarn": "4.6.0"
+      },
+      "recipe_hash": "cca4381cf45e860b8da91d9158a7be10d6eeb1bc05382f266a01693f7dc28f83",
+      "tag": "robo-minerador/runner:node24.0.0-yarn4-4.6.0",
+      "versions": {
+        "node": "24.0.0",
+        "npm": "10.8.2",
+        "yarn": "4.6.0"
+      }
+    }
+  },
+  "schema_version": "1.0",
+  "source_hash": "02f79b1497b303161c4501b41a6b178f5066fbaaf4d6442272ce413191cf35e9"
+}

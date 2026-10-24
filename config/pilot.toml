@@ -1,0 +1,32 @@
+schema_version = "1.0"
+workspace = "/workspace"
+environment_catalog = "/app/config/environments.lock.json"
+methodology_files = ["/app/docs/superpowers/specs/2026-10-24-robo-minerador-design.md"]
+
+[discovery]
+created_from = "2024-01-01"
+created_until = "2024-01-02"
+include_forks = true
+include_archived = true
+api_version = "2026-03-10"
+per_page = 100
+transport_attempts = 3
+max_wait_seconds = 900
+
+[execution]
+platform = "linux/amd64"
+parallel_repositories = 1
+cpus = 2
+memory_mb = 4096
+workspace_limit_mb = 10240
+install_timeout_seconds = 1200
+build_timeout_seconds = 600
+suite_timeout_seconds = 900
+suite_repetitions = 3
+minimum_valid_cases = 4
+
+[review]
+confidence = 0.95
+margin = 0.05
+proportion = 0.5
+seed = 20261024

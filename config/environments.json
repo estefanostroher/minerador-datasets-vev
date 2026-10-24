@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0",
+  "platform": "linux/amd64",
+  "default_node": "22.22.3",
+  "uv": "0.13.5",
+  "bases": {
+    "python": {"source": "python:3.12.9-slim-bookworm", "version": "3.12.9"},
+    "node20": {"source": "node:20.19.0-bookworm-slim", "version": "20.19.0"},
+    "node22": {"source": "node:22.22.3-bookworm-slim", "version": "22.22.3"},
+    "node24": {"source": "node:24.0.0-bookworm-slim", "version": "24.0.0"}
+  },
+  "package_managers": {
+    "npm": {"package": "npm", "command": "npm", "version": "10.8.2"},
+    "pnpm": {"package": "pnpm", "command": "pnpm", "version": "9.15.5"},
+    "yarn1": {"package": "yarn", "command": "yarn", "version": "1.22.22"},
+    "yarn4": {"package": "@yarnpkg/cli-dist", "command": "yarn", "version": "4.6.0"}
+  }
+}
