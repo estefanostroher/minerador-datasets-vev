@@ -7,6 +7,7 @@ WORKDIR /app
 RUN pip install --no-cache-dir uv==${UV_VERSION}
 COPY pyproject.toml uv.lock ./
 COPY src ./src
+COPY schemas ./schemas
 RUN uv sync --frozen --all-groups
 COPY config/pilot.toml config/environments.json ./config/
 COPY tests ./tests

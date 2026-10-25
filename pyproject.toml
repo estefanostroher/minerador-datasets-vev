@@ -37,6 +37,10 @@ markers = ["docker: requires a working Docker daemon"]
 packages = ["src/robo_minerador"]
 artifacts = ["src/robo_minerador/state/migrations/*.sql"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"schemas/analysis-request.schema.json" = "robo_minerador/extraction/schemas/analysis-request.schema.json"
+"schemas/analysis-response.schema.json" = "robo_minerador/extraction/schemas/analysis-response.schema.json"
+
 [tool.ruff]
 target-version = "py312"
 line-length = 100

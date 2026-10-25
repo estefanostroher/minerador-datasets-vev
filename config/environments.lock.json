@@ -25,12 +25,12 @@
   "runtimes": {
     "miner": {
       "base": "python",
-      "image_id": "sha256:09cda77dd1784995572679faee8ab16e345af412b26b7282bef37cd976157c9a",
+      "image_id": "sha256:48d3ff871e37b17cd5d84f1694a0814090258a339e1dc02e428c628c8a617ad9",
       "outputs": {
         "python": "Python 3.12.9",
         "uv": "uv 0.13.5 (x86_64-unknown-linux-gnu)"
       },
-      "recipe_hash": "833145f06aecb76954d5e4b161c2cbf8f02fa1116b0300d1aae05a0ee0c3d181",
+      "recipe_hash": "ba5794d2a0da802bdd17e25b29e356611267e7fb6c4ca0e857fdaeb4727421d3",
       "tag": "robo-minerador/miner:py3.12.9-uv0.13.5",
       "versions": {
         "python": "3.12.9",

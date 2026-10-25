@@ -1,0 +1,1 @@
+export { magnitude } from './value';

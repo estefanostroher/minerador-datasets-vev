@@ -1,0 +1,3 @@
+# Runtime evidence and its source snapshots must keep their original bytes.
+tests/fixtures/projects/jest-basic/** -text whitespace=cr-at-eol
+tests/fixtures/projects/vitest-basic/** -text whitespace=cr-at-eol

@@ -1,0 +1,5 @@
+{
+  "name": "engineering-jest-fixture", "version": "1.0.0", "private": true,
+  "scripts": {"test": "jest --runInBand"},
+  "devDependencies": {"jest": "30.0.0", "ts-jest": "29.4.5", "typescript": "5.8.3"}
+}

@@ -1,0 +1,111 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://robo-minerador.local/analysis-response.schema.json",
+  "type": "object", "additionalProperties": false,
+  "required": ["protocol_version", "request_id", "status", "targets", "test_calls", "documents", "metrics", "limitations", "errors"],
+  "properties": {
+    "protocol_version": {"const": "1.0"},
+    "request_id": {"type": "string", "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]*$"},
+    "status": {"enum": ["ok", "error"]},
+    "targets": {"type": "array", "items": {"$ref": "#/definitions/target"}},
+    "test_calls": {"type": "array", "items": {"$ref": "#/definitions/call"}},
+    "documents": {"type": "array", "items": {"$ref": "#/definitions/documentation"}},
+    "metrics": {"type": "array", "items": {"$ref": "#/definitions/metrics"}},
+    "limitations": {"type": "array", "items": {"$ref": "#/definitions/issue"}},
+    "errors": {"type": "array", "items": {"$ref": "#/definitions/issue"}}
+  },
+  "allOf": [
+    {"if": {"properties": {"status": {"const": "error"}}}, "then": {"properties": {"targets": {"type": "array", "maxItems": 0}, "test_calls": {"type": "array", "maxItems": 0}, "documents": {"type": "array", "maxItems": 0}, "metrics": {"type": "array", "maxItems": 0}, "errors": {"type": "array", "minItems": 1}}}},
+    {"if": {"properties": {"status": {"const": "ok"}}}, "then": {"properties": {"request_id": {"type": "string", "minLength": 1}, "errors": {"type": "array", "maxItems": 0}}}}
+  ],
+  "definitions": {
+    "evaluation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "reason", "evidence"],
+      "properties": {
+        "status": {"enum": ["approved", "rejected", "not_evaluated"]},
+        "reason": {"type": "string", "minLength": 1},
+        "evidence": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "marker": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "text", "start_offset", "end_offset"],
+      "properties": {
+        "kind": {"enum": ["inputs", "outputs", "constraints", "errors"]},
+        "text": {"type": "string", "minLength": 1},
+        "start_offset": {"$ref": "#/definitions/offset"}, "end_offset": {"$ref": "#/definitions/offset"}
+      }
+    },
+    "document_source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "start_offset", "end_offset", "text", "association", "symbol", "markers"],
+      "properties": {
+        "path": {"$ref": "#/definitions/path"},
+        "start_offset": {"$ref": "#/definitions/offset"}, "end_offset": {"$ref": "#/definitions/offset"},
+        "text": {"type": "string", "minLength": 1},
+        "association": {"enum": ["adjacent_jsdoc", "overload_jsdoc", "markdown_path_symbol"]},
+        "symbol": {"type": "string", "minLength": 1},
+        "markers": {"type": "array", "items": {"$ref": "#/definitions/marker"}}
+      }
+    },
+    "documentation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["symbol_target_id", "status", "reason", "evidence", "sources"],
+      "properties": {
+        "symbol_target_id": {"$ref": "#/definitions/id"},
+        "status": {"enum": ["approved", "rejected", "not_evaluated"]},
+        "reason": {"type": "string", "minLength": 1},
+        "evidence": {"type": "array", "items": {"type": "string"}},
+        "sources": {"type": "array", "items": {"$ref": "#/definitions/document_source"}}
+      }
+    },
+    "decision": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "text", "start_offset", "end_offset"],
+      "properties": {
+        "kind": {"type": "string", "minLength": 1}, "text": {"type": "string", "minLength": 1},
+        "start_offset": {"$ref": "#/definitions/offset"}, "end_offset": {"$ref": "#/definitions/offset"}
+      }
+    },
+    "metrics": {
+      "type": "object", "additionalProperties": false,
+      "required": ["symbol_target_id", "status", "reason", "method", "cyclomatic_complexity", "physical_lines", "decisions", "triviality"],
+      "properties": {
+        "symbol_target_id": {"$ref": "#/definitions/id"},
+        "status": {"enum": ["approved", "not_evaluated"]}, "reason": {"type": "string", "minLength": 1},
+        "method": {"const": "cyclomatic-ts-v1"},
+        "cyclomatic_complexity": {"type": ["integer", "null"], "minimum": 1},
+        "physical_lines": {"type": "integer", "minimum": 1},
+        "decisions": {"type": "array", "items": {"$ref": "#/definitions/decision"}},
+        "triviality": {"$ref": "#/definitions/evaluation"}
+      }
+    },
+    "id": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(?:\u0000|:|\\\\|(?:^|/)\\.\\.?(?:/|$)|//)).+$"},
+    "offset": {"type": "integer", "minimum": 0},
+    "issue": {"type": "object", "additionalProperties": false, "required": ["code", "message"], "properties": {"code": {"type": "string", "pattern": "^[a-z_]+$"}, "message": {"type": "string", "minLength": 1}, "path": {"$ref": "#/definitions/path"}}},
+    "target": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "kind", "qualified_name", "path", "start_offset", "end_offset", "start_line", "start_column", "end_line", "end_column", "code", "signature"],
+      "properties": {
+        "id": {"$ref": "#/definitions/id"}, "kind": {"enum": ["function", "method"]}, "qualified_name": {"type": "string", "minLength": 1}, "path": {"$ref": "#/definitions/path"},
+        "start_offset": {"$ref": "#/definitions/offset"}, "end_offset": {"$ref": "#/definitions/offset"},
+        "start_line": {"type": "integer", "minimum": 1}, "end_line": {"type": "integer", "minimum": 1}, "start_column": {"$ref": "#/definitions/offset"}, "end_column": {"$ref": "#/definitions/offset"},
+        "code": {"type": "string", "minLength": 1}, "signature": {"type": "string", "minLength": 1}
+      }
+    },
+    "call": {
+      "type": "object", "additionalProperties": false,
+      "required": ["symbol_target_id", "callsite_path", "start_offset", "end_offset", "case_declaration_id", "case_title", "case_start_offset", "parameterized", "link_kind", "reason", "path_resolution", "runtime_confirmed", "mock_potential"],
+      "properties": {
+        "symbol_target_id": {"anyOf": [{"$ref": "#/definitions/id"}, {"type": "null"}]}, "callsite_path": {"$ref": "#/definitions/path"},
+        "start_offset": {"$ref": "#/definitions/offset"}, "end_offset": {"$ref": "#/definitions/offset"}, "case_declaration_id": {"$ref": "#/definitions/id"},
+        "case_title": {"type": "string"}, "case_start_offset": {"$ref": "#/definitions/offset"}, "parameterized": {"type": "boolean"},
+        "link_kind": {"enum": ["direct", "unresolved"]}, "reason": {"enum": ["resolved_symbol", "ambiguous_receiver", "unsupported_callee", "target_not_found"]},
+        "path_resolution": {"type": "array", "items": {"$ref": "#/definitions/path"}}, "runtime_confirmed": {"const": false}, "mock_potential": {"type": "boolean"}
+      },
+      "allOf": [{"if": {"properties": {"link_kind": {"const": "direct"}}}, "then": {"properties": {"symbol_target_id": {"$ref": "#/definitions/id"}, "reason": {"const": "resolved_symbol"}, "path_resolution": {"type": "array", "minItems": 1}}}, "else": {"properties": {"symbol_target_id": {"type": "null"}}}}]
+    }
+  }
+}

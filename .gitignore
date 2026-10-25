@@ -16,3 +16,6 @@ dist/
 workspace/
 results/
 artifacts/
+# Generated engineering evidence belongs in ignored storage, never source fixtures.
+/tests/fixtures/reports/
+/tests/fixtures/instrumentation/
