@@ -225,3 +225,55 @@ def test_invalid_rate_delay_headers_keep_exponential_fallback(headers: dict[str,
             client.get_repository(1)
     assert waits == [60, 120]
     assert len(calls) == 3
+
+
+@pytest.mark.parametrize("endpoint", ["search", "repository", "commit", "archive", "license"])
+@pytest.mark.parametrize("token", [None, "secret-token"])
+def test_review_explicit_user_agent_and_isolated_redirect_headers(
+    endpoint: str,
+    token: str | None,
+) -> None:
+    sha = "a" * 40
+    calls: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if "/tarball/" in request.url.path:
+            return httpx.Response(
+                302,
+                headers={
+                    "Location": f"https://codeload.github.com/owner/project/tar.gz/{sha}",
+                    "Set-Cookie": "api-session=private; Domain=.github.com; Path=/",
+                },
+            )
+        if request.url.host == "codeload.github.com":
+            return httpx.Response(200, content=b"archive transport fixture")
+        return httpx.Response(200, json={})
+
+    with httpx.Client(
+        transport=httpx.MockTransport(handle),
+        headers={"User-Agent": "ambient-client", "Cookie": "ambient=private"},
+    ) as http:
+        client = GitHubClient(settings(), http=http, token=token)
+        if endpoint == "search":
+            client.search_page("language:TypeScript", 1)
+        elif endpoint == "repository":
+            client.get_repository(123)
+        elif endpoint == "commit":
+            client.get_commit("owner/project", sha)
+        elif endpoint == "license":
+            client.get_license("owner/project", sha)
+        else:
+            client.get_archive("owner/project", sha, max_bytes=1000)
+    assert len(calls) == (2 if endpoint == "archive" else 1)
+    for request in calls:
+        assert request.headers.get("user-agent") == "robo-minerador/0.1.0"
+        if request.url.host == "api.github.com":
+            expected_auth = f"Bearer {token}" if token else None
+            assert request.headers.get("authorization") == expected_auth
+            if endpoint in {"archive", "license"}:
+                assert "cookie" not in request.headers
+        else:
+            assert request.url.host == "codeload.github.com"
+            assert "authorization" not in request.headers
+            assert "cookie" not in request.headers
