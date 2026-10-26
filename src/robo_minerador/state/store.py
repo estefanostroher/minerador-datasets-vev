@@ -13,7 +13,7 @@ import json
 import sqlite3
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
@@ -71,6 +71,28 @@ class Event:
     kind: str
     observed_at: datetime
     payload: dict[str, object]
+
+
+@dataclass(frozen=True)
+class StoredDuplicateGroup:
+    id: str
+    run_id: str
+    method: str
+    fingerprint: str
+
+
+@dataclass(frozen=True)
+class DeduplicationCandidate:
+    id: str
+    run_id: str
+    repository_id: str
+    commit_sha: str
+    path: str
+    start_offset: int
+    end_offset: int
+    symbol_name: str | None
+    source_artifact_id: str | None
+    duplicate_group_id: str | None
 
 
 def _json(value: object) -> str:
@@ -561,6 +583,63 @@ class StateStore:
                     raise ValueError("discovery checkpoint is immutable")
                 return
             self._event(run_id, "discovery_checkpoint", payload={"key": key, "digest": digest})
+
+    def record_duplicate_group(self, group: StoredDuplicateGroup) -> None:
+        """Insert an immutable group; collisions need distinct caller fingerprints."""
+        with self.transaction():
+            self.database.connection.execute(
+                "INSERT OR IGNORE INTO duplicate_groups(id, run_id, method, fingerprint) "
+                "VALUES (:id, :run_id, :method, :fingerprint)",
+                asdict(group),
+            )
+            row = self.database.connection.execute(
+                "SELECT * FROM duplicate_groups WHERE id = ?",
+                (group.id,),
+            ).fetchone()
+            if row is None or dict(row) != asdict(group):
+                raise ValueError("duplicate group mapping is immutable")
+
+    def record_duplicate_candidate(self, candidate: DeduplicationCandidate) -> None:
+        """Preserve original paths/bytes and never remap a recorded membership."""
+        with self.transaction():
+            if candidate.source_artifact_id is not None:
+                self._verify_artifact(candidate.source_artifact_id)
+            self.database.connection.execute(
+                "INSERT OR IGNORE INTO candidates(id, run_id, repository_id, commit_sha, path, "
+                "start_offset, end_offset, symbol_name, source_artifact_id, duplicate_group_id) "
+                "VALUES (:id, :run_id, :repository_id, :commit_sha, :path, :start_offset, "
+                ":end_offset, :symbol_name, :source_artifact_id, :duplicate_group_id)",
+                asdict(candidate),
+            )
+            row = self.database.connection.execute(
+                "SELECT * FROM candidates WHERE id = ?",
+                (candidate.id,),
+            ).fetchone()
+            if row is None or dict(row) != asdict(candidate):
+                raise ValueError("candidate duplicate mapping is immutable")
+
+    def deduplication_rows(
+        self,
+        run_id: str,
+        method: str,
+        candidate_ids: tuple[str, ...] = (),
+    ) -> tuple[list[StoredDuplicateGroup], list[DeduplicationCandidate]]:
+        groups = self.database.connection.execute(
+            "SELECT * FROM duplicate_groups WHERE run_id = ? AND method = ?",
+            (run_id, method),
+        )
+        # Inspect expected members even after a corrupted NULL/foreign mapping,
+        # without treating unrelated, unselected candidates as eligible members.
+        candidates = self.database.connection.execute(
+            "SELECT c.* FROM candidates c LEFT JOIN duplicate_groups g "
+            "ON c.duplicate_group_id = g.id WHERE c.run_id = ? "
+            "AND (g.method = ? OR c.id IN (SELECT value FROM json_each(?)))",
+            (run_id, method, _json(candidate_ids)),
+        )
+        return (
+            [StoredDuplicateGroup(**dict(row)) for row in groups],
+            [DeduplicationCandidate(**dict(row)) for row in candidates],
+        )
 
     def discovery_checkpoints(self, run_id: str) -> dict[str, str]:
         return {
