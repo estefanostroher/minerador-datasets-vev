@@ -11,6 +11,54 @@ const fixture = (path: string) => readFileSync(new URL(root + path, import.meta.
 const nodeRequire = createRequire(import.meta.url);
 
 for (const version of ['3.2.4', '4.0.0']) {
+  test(`Vitest ${version} reporter captures resolved selectors without changing T10 decisions`, async () => {
+    const {parseReport} = await import('../src/frameworks/vitest.js');
+    const {raw} = frameworkFixture('vitest', version);
+    const source = fixture('projects/vitest-basic/value.test.ts');
+    const sources = {'value.test.ts': source};
+    const legacy = parseReport(raw, sources, 'a'.repeat(64));
+    const reporterSource = readFileSync(new URL('../../src/frameworks/reporters/vitest.mjs', import.meta.url), 'utf8')
+      .replace(/^import .+ from .+;$/gm, '')
+      .replace('export default class Reporter', 'module.exports = class Reporter');
+    const selectors = ['shard', 'changed', 'related', 'project', 'filters', 'cliExclude', 'standalone', 'mergeReports'];
+    function sandbox(selection: Record<string, unknown>) {
+      let emitted: any;
+      const module = {exports: undefined as any};
+      const req = (name: string) => ({
+        './package.json': {type: 'module'}, 'vitest/package.json': {version},
+        'typescript/package.json': {version: '5.8.3'}, 'vite/package.json': {version: '6.1.0'},
+      }[name]);
+      runInNewContext(reporterSource, {module, process: {argv: ['node', 'vitest', 'run']},
+        createRequire: () => req, createHash,
+        fs: {readFileSync: () => Buffer.from(source), mkdirSync: () => {},
+          writeFileSync: (_path: string, content: string) => { emitted = JSON.parse(content); }},
+      });
+      const reporter = new module.exports();
+      reporter.onInit({projects: [{}], config: {...raw.configuration, include: ['*.test.ts'], exclude: ['vendor/**'],
+        includeTaskLocation: true, ...selection}});
+      reporter.onTestRunEnd(raw.files.map((task: unknown) => ({task})), [], 'passed');
+      return emitted;
+    }
+    const absent = sandbox({});
+    for (const key of selectors) {
+      assert.ok(Object.hasOwn(absent.configuration, key), key);
+      assert.equal(absent.configuration[key], null, key);
+    }
+    const active = {shard: {index: 1, count: 2}, changed: 'HEAD', related: ['value.ts'], project: ['unit'],
+      filters: ['value.test.ts'], cliExclude: ['other.test.ts'], standalone: true, mergeReports: './reports'};
+    const observed = sandbox(active);
+    for (const key of selectors) assert.deepEqual(observed.configuration[key], active[key as keyof typeof active], key);
+    assert.deepEqual(observed.configuration.include, ['*.test.ts']);
+    assert.deepEqual(observed.configuration.exclude, ['vendor/**']);
+    for (const envelope of [absent, observed]) {
+      const report = parseReport(envelope, sources, 'a'.repeat(64));
+      assert.deepEqual(report.cases, legacy.cases);
+      assert.deepEqual(report.support, legacy.support);
+      assert.equal(report.completeness, 'not_evaluated');
+      assert.equal(report.scope, 'unknown');
+    }
+  });
+
   test(`Vitest ${version} result support does not imply serial trace support`, async () => {
     const {parseReport} = await import('../src/frameworks/vitest.js');
     const {raw} = frameworkFixture('vitest', version);

@@ -38,6 +38,8 @@ packages = ["src/robo_minerador"]
 artifacts = ["src/robo_minerador/state/migrations/*.sql"]
 
 [tool.hatch.build.targets.wheel.force-include]
+"tools/ts-analyzer/src/frameworks/reporters/jest.cjs" = "robo_minerador/validation/supplements/jest.cjs"
+"tools/ts-analyzer/src/frameworks/reporters/vitest.mjs" = "robo_minerador/validation/supplements/vitest.mjs"
 "schemas/analysis-request.schema.json" = "robo_minerador/extraction/schemas/analysis-request.schema.json"
 "schemas/analysis-response.schema.json" = "robo_minerador/extraction/schemas/analysis-response.schema.json"
 

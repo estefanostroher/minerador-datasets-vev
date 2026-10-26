@@ -47,6 +47,8 @@ module.exports = class Reporter {
         createHash('sha256').update(fs.readFileSync(file.testFilePath)).digest('hex'),
       ])),
       configuration: {mode, argv: process.argv.slice(2), global: this.globalConfig,
+        coverage: {enabled: this.globalConfig.collectCoverage, provider: this.globalConfig.coverageProvider,
+          reports: this.globalConfig.coverageReporters, directory: this.globalConfig.coverageDirectory},
         projects: projects.map(p => ({rootDir: p.rootDir, transform: p.transform,
           testMatch: p.testMatch, extensionsToTreatAsEsm: p.extensionsToTreatAsEsm,
           testRunner: p.testRunner, runner: p.runner}))},

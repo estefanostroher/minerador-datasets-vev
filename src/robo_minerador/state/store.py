@@ -386,6 +386,86 @@ class StateStore:
     def close(self) -> None:
         self.database.close()
 
+    def record_task_checkpoint(self, task_id: str, kind: str, digest: str) -> None:
+        """Append a CAS-verified durable checkpoint, linked to the current attempt."""
+        with self.transaction():
+            task = self.get_task(task_id)
+            if task.outcome != "running":
+                raise InvalidTransition("checkpoints require a running task")
+            self._verify_artifact(digest)
+            self.database.connection.execute(
+                "INSERT OR IGNORE INTO task_artifacts(task_id, artifact_id) VALUES (?, ?)",
+                (task_id, digest),
+            )
+            self._event(
+                task.run_id,
+                "task_checkpoint",
+                task_id=task_id,
+                attempt=task.attempt,
+                payload={"kind": kind, "digest": digest},
+            )
+
+    def task_checkpoints(self, task_id: str) -> list[Event]:
+        task = self.get_task(task_id)
+        checkpoints = [
+            event
+            for event in self.events(task.run_id)
+            if event.task_id == task_id and event.kind == "task_checkpoint"
+        ]
+        for event in checkpoints:
+            self._verify_artifact(str(event.payload["digest"]))
+        return checkpoints
+
+    def record_suite_run(
+        self,
+        task_id: str,
+        *,
+        command: tuple[str, ...],
+        environment_hash: str,
+        outcome: TaskOutcome,
+        exit_code: int | None,
+        started_at: datetime,
+        finished_at: datetime,
+        stdout: str | None = None,
+        stderr: str | None = None,
+    ) -> str:
+        """Append one repository-level execution; checkpoint linkage can share its transaction."""
+        identifier = uuid4().hex
+        with self.transaction():
+            task = self.get_task(task_id)
+            if task.outcome != "running":
+                raise InvalidTransition("suite runs require a running task")
+            for digest in (stdout, stderr):
+                if digest is not None:
+                    self._verify_artifact(digest)
+            self.database.connection.execute(
+                "INSERT INTO suite_runs(id, run_id, task_id, command_json, environment_hash, "
+                "outcome, exit_code, started_at, finished_at, stdout_artifact_id, "
+                "stderr_artifact_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    identifier,
+                    task.run_id,
+                    task_id,
+                    _json(command),
+                    environment_hash,
+                    outcome,
+                    exit_code,
+                    _utc(started_at),
+                    _utc(finished_at),
+                    stdout,
+                    stderr,
+                ),
+            )
+        return identifier
+
+    def suite_runs(self, task_id: str) -> list[dict[str, object]]:
+        return [
+            dict(row)
+            for row in self.database.connection.execute(
+                "SELECT * FROM suite_runs WHERE task_id = ? ORDER BY rowid", (task_id,)
+            )
+        ]
+
     def upsert_repository(
         self, run_id: str, external_id: int, full_name: str, commit_sha: str | None
     ) -> str:
@@ -402,6 +482,59 @@ class StateStore:
                 (repository_id, run_id, str(external_id), full_name, commit_sha),
             )
         return repository_id
+
+    def record_measurement(
+        self,
+        task_id: str,
+        *,
+        name: str,
+        value: float | None,
+        availability: Literal["available", "unavailable", "not_applicable"],
+        method: str,
+        reason_code: str,
+        evidence_id: str,
+    ) -> str:
+        """Idempotently persist a descriptive metric without appending assessments."""
+        identifier = stable_digest(
+            {
+                "task": task_id,
+                "name": name,
+                "value": value,
+                "availability": availability,
+                "method": method,
+                "reason": reason_code,
+                "evidence": evidence_id,
+            }
+        )
+        with self.transaction():
+            task = self.get_task(task_id)
+            self._verify_artifact(evidence_id)
+            self.database.connection.execute(
+                "INSERT OR IGNORE INTO measurements(id, run_id, task_id, name, value, "
+                "availability, method, reason_code, observed_at, evidence_artifact_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    identifier,
+                    task.run_id,
+                    task_id,
+                    name,
+                    value,
+                    availability,
+                    method,
+                    reason_code,
+                    _utc(),
+                    evidence_id,
+                ),
+            )
+        return identifier
+
+    def measurements(self, task_id: str) -> list[dict[str, object]]:
+        rows = self.database.connection.execute(
+            "SELECT * FROM measurements WHERE task_id = ? ORDER BY rowid", (task_id,)
+        ).fetchall()
+        for row in rows:
+            self._verify_artifact(row["evidence_artifact_id"])
+        return [dict(row) for row in rows]
 
     def repositories(self, run_id: str) -> list[dict[str, object]]:
         """Return run-scoped repository identities, independent of mutable names."""

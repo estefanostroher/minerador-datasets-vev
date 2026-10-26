@@ -37,7 +37,7 @@ class TraceEvent(ProtocolModel):
     outcome: Literal["returned", "threw"] | None = None
 
 
-def correlate_cases(
+def _correlate_proven_cases(
     cases: Iterable[CaseResult],
     callsites: Iterable[Callsite],
     events: list[TraceEvent],
@@ -108,12 +108,103 @@ def correlate_cases(
 
 
 @dataclass(frozen=True)
+class CaseCorrelation:
+    case_ids: tuple[str, ...]
+    unresolved_case_ids: tuple[str, ...]
+    uncertainty_reasons: tuple[str, ...]
+
+
+def correlate_case_evidence(
+    cases: Iterable[CaseResult],
+    callsites: Iterable[Callsite],
+    events: list[TraceEvent],
+    target_id: str,
+) -> CaseCorrelation:
+    """Separate observed absence from missing mapping/context/instrumentation.
+
+    A complete case window with no reached direct call is a negative observation.
+    A complete reached call without an original entry is likewise mock-only, not
+    an instrumentation failure. Missing events (including sequence holes) cannot
+    establish either negative fact.
+    """
+    cases, callsites = tuple(cases), tuple(callsites)
+    proven = _correlate_proven_cases(cases, callsites, events, target_id)
+    unresolved, reasons = set(), set()
+    for case in cases:
+        if case.status != "passed" or case.expected_failure:
+            continue  # Actual failures/skips/expected failures are conclusively excluded.
+        reason = ""
+        matching = [
+            e
+            for e in events
+            if (e.file, e.declaration_position, e.runtime_id, e.parameter_index)
+            == (case.file, case.declaration_position, case.runtime_id, case.parameter_index)
+        ]
+        windows = [
+            [e for e in matching if e.kind == kind]
+            for kind in ("case_collected", "test_entry", "case_end")
+        ]
+        if not case.eligible:
+            reason = "runtime_case_mapping_unavailable"
+        elif any(len(window) != 1 for window in windows):
+            reason = "case_context_unavailable"
+        else:
+            collected, start, end = (window[0] for window in windows)
+            if (
+                len({(e.stream_id, e.pid) for e in (collected, start, end)}) != 1
+                or not collected.sequence < start.sequence < end.sequence
+                or end.outcome != "returned"
+            ):
+                reason = "case_context_inconsistent"
+            else:
+                sequences = [
+                    e.sequence
+                    for e in events
+                    if (e.stream_id, e.pid) == (start.stream_id, start.pid)
+                    and start.sequence <= e.sequence <= end.sequence
+                ]
+                if sequences != list(range(start.sequence, end.sequence + 1)):
+                    reason = "case_trace_sequence_incomplete"
+        if not reason and case.identity not in proven:
+            if any(
+                site.callsite_path == case.file
+                and site.case_start_offset == case.declaration_position
+                and site.symbol_target_id in {None, target_id}
+                and (site.link_kind != "direct" or site.reason != "resolved_symbol")
+                for site in callsites
+            ):
+                reason = "static_direct_link_unavailable"
+            elif any(
+                e.kind == "original_target_entry" and e.target_id == target_id and e.attributable
+                for e in matching
+            ):
+                reason = "original_entry_without_matching_direct_invocation"
+        if reason:
+            proven.discard(case.identity)
+            unresolved.add(case.identity)
+            reasons.add(reason)
+    return CaseCorrelation(tuple(sorted(proven)), tuple(sorted(unresolved)), tuple(sorted(reasons)))
+
+
+def correlate_cases(
+    cases: Iterable[CaseResult],
+    callsites: Iterable[Callsite],
+    events: list[TraceEvent],
+    target_id: str,
+) -> set[str]:
+    """Legacy set API: only positive observations, never a claim of completeness."""
+    return set(correlate_case_evidence(cases, callsites, events, target_id).case_ids)
+
+
+@dataclass(frozen=True)
 class CaseValidation:
     status: Literal["evaluated", "not_evaluated"]
     case_ids: tuple[str, ...]
     target_id: str
     reason: str
     evidence_id: str
+    unresolved_case_ids: tuple[str, ...] = ()
+    uncertainty_reasons: tuple[str, ...] = ()
 
 
 def trace_mode_supported(raw: Mapping[str, Any]) -> bool:
@@ -236,6 +327,7 @@ def validate_cases(
     ledger: dict[str, object] = {
         "schema_version": "1.0",
         "purpose": "observational_pair",
+        "association_rule_version": "T11-v2",
         "ordinal": pair_ordinal,
         "original_execution": original_execution.evidence_artifact,
         "traced_execution": traced_execution.evidence_artifact,
@@ -251,15 +343,29 @@ def validate_cases(
     }
 
     def finish(
-        status: Literal["evaluated", "not_evaluated"], ids: set[str], reason: str
+        status: Literal["evaluated", "not_evaluated"],
+        ids: set[str],
+        reason: str,
+        unresolved: tuple[str, ...] = (),
+        uncertainty_reasons: tuple[str, ...] = (),
     ) -> CaseValidation:
         ordered = tuple(sorted(ids))
         evidence = artifacts.put(
             json.dumps(
-                {**ledger, "status": status, "case_ids": ordered, "reason": reason}, sort_keys=True
+                {
+                    **ledger,
+                    "status": status,
+                    "case_ids": ordered,
+                    "reason": reason,
+                    "unresolved_case_ids": unresolved,
+                    "uncertainty_reasons": uncertainty_reasons,
+                },
+                sort_keys=True,
             ).encode()
         )
-        return CaseValidation(status, ordered, target_id, reason, evidence)
+        return CaseValidation(
+            status, ordered, target_id, reason, evidence, unresolved, uncertainty_reasons
+        )
 
     if (
         manifest.status != "ready"
@@ -333,10 +439,16 @@ def validate_cases(
     streams: dict[tuple[str, int], list[int]] = {}
     for event in events:
         streams.setdefault((event.stream_id, event.pid), []).append(event.sequence)
-    if any(values != list(range(len(values))) for values in streams.values()):
-        raise ValueError("trace stream sequence mismatch")
-    ids = correlate_cases(traced.cases, manifest.callsites, events, target_id)
-    return finish("evaluated", ids, "passed_static_direct_and_original_entry_in_same_invocation")
+    if any(values != sorted(set(values)) for values in streams.values()):
+        return finish("not_evaluated", set(), "trace_stream_order_invalid")
+    correlation = correlate_case_evidence(traced.cases, manifest.callsites, events, target_id)
+    return finish(
+        "evaluated",
+        set(correlation.case_ids),
+        "passed_static_direct_and_original_entry_in_same_invocation",
+        correlation.unresolved_case_ids,
+        correlation.uncertainty_reasons,
+    )
 
 
 def valid_case_ids(candidates: CaseValidation | Iterable[Mapping[str, object]]) -> set[str]:
@@ -344,3 +456,8 @@ def valid_case_ids(candidates: CaseValidation | Iterable[Mapping[str, object]]) 
     if isinstance(candidates, CaseValidation) and candidates.status == "evaluated":
         return set(candidates.case_ids)
     return set()
+
+
+def meets_minimum_in_each_run(case_sets: list[set[str]]) -> bool:
+    """H-F03 counts distinct observed cases separately in each original repetition."""
+    return len(case_sets) == 3 and all(len(cases) >= 4 for cases in case_sets)

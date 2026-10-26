@@ -182,6 +182,82 @@ def test_duplicate_case_windows_are_ambiguous_and_candidate_ids_are_not_validati
     assert valid_case_ids([{"case_id": case().identity, "events": events()}]) == set()
 
 
+def correlation(cases, trace):
+    from robo_minerador.validation import cases as module
+
+    rule = getattr(module, "correlate_case_evidence", None)
+    assert rule is not None, "T11 drops the distinction between unknown and conclusively absent"
+    return rule(cases, [callsite()], trace, "target")
+
+
+@pytest.mark.parametrize("missing", range(5))
+def test_missing_trace_events_are_unknown_not_a_conclusive_zero(missing):
+    trace = events()
+    trace.pop(missing)
+    result = correlation([case()], trace)
+    assert not result.case_ids
+    assert result.unresolved_case_ids == (case().identity,)
+
+
+def test_passed_case_with_unavailable_mapping_is_unknown():
+    unmapped = replace(case(), mapping="not_evaluated")
+    result = correlation([unmapped], events())
+    assert not result.case_ids
+    assert result.unresolved_case_ids == (unmapped.identity,)
+
+
+def test_loss_in_another_case_does_not_erase_an_observed_complete_invocation():
+    known = events()
+    unrelated = [
+        event.model_copy(
+            update={"runtime_id": "1", "declaration_position": 20, "sequence": event.sequence + 1}
+        )
+        for event in events()
+        if event.kind != "test_entry"
+    ]
+    # Framework collection precedes both executions, as in real Jest/Vitest.
+    trace = [
+        known[0],
+        *unrelated,
+        *(event.model_copy(update={"sequence": event.sequence + 5}) for event in known[1:]),
+    ]
+    unknown = replace(case(), runtime_id="1", declaration_position=20)
+    result = correlation([case(), unknown], trace)
+    assert result.case_ids == (case().identity,)
+    assert result.unresolved_case_ids == (unknown.identity,)
+
+
+@pytest.mark.parametrize("variant", ["mock_only", "unreached", "helper"])
+def test_complete_context_can_prove_no_direct_original_invocation(variant):
+    trace = events()
+    if variant == "mock_only":
+        trace.pop(3)  # A reached direct call but a mock never enters the original.
+    elif variant == "unreached":
+        del trace[2:4]  # The static direct call lives in a branch not taken.
+    else:
+        trace[3] = trace[3].model_copy(update={"attributable": False})
+    trace = [event.model_copy(update={"sequence": i}) for i, event in enumerate(trace)]
+    result = correlation([case()], trace)
+    assert not result.case_ids and not result.unresolved_case_ids
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"expected_failure": True},
+        {"status": "failed"},
+        {"status": "skipped"},
+        {"status": "pending"},
+        {"status": "todo"},
+        {"status": "not_executed"},
+    ],
+)
+def test_excluded_outcomes_remain_conclusive_even_without_mapping_or_context(change):
+    excluded = replace(case(), mapping="not_evaluated", **change)
+    result = correlation([excluded], [])
+    assert not result.case_ids and not result.unresolved_case_ids
+
+
 def test_utf16_overlay_coordinates_replay_original_bytes_and_reject_false_maps():
     original = "// 🧪\nexport function f() { return 1; }"
     offset = len("// 🧪\n".encode("utf-16-le")) // 2
@@ -240,9 +316,16 @@ def controlled_fixture(framework, version):
     return json.loads(result.stdout)
 
 
-def controlled_pair(tmp_path, framework, version):
+def controlled_pair(tmp_path, framework, version, *, missing_mapping=False, missing_context=False):
     """Build a complete, small engineering CAS in pytest's temporary directory."""
-    value = controlled_fixture(framework, version)
+    value = json.loads(json.dumps(controlled_fixture(framework, version)))
+    if missing_mapping:
+        first = next(
+            c
+            for c in value["normalized"]["cases"]
+            if c["status"] == "passed" and not c["expected_failure"]
+        )
+        first["mapping"] = "not_evaluated"
     store = ArtifactStore(tmp_path / "artifacts")
     raw = json.dumps(value["raw"], ensure_ascii=False, separators=(",", ":")).encode()
     report = load_report(json.dumps(value["normalized"]).encode(), raw, store)
@@ -285,6 +368,19 @@ def controlled_pair(tmp_path, framework, version):
         rows += [{"kind": "case_end", "outcome": "returned"}]
         for row in rows:
             trace_events.append({**common, "sequence": len(trace_events), **row})
+    if missing_context:
+        first = next(c for c in report.cases if c.eligible)
+        trace_events = [
+            row
+            for row in trace_events
+            if not (
+                row["kind"] == "test_entry"
+                and row["file"] == first.file
+                and row["runtime_id"] == first.runtime_id
+                and row["declaration_position"] == first.declaration_position
+                and row["parameter_index"] == first.parameter_index
+            )
+        ]
     trace = b"\n".join(json.dumps(row).encode() for row in trace_events) + b"\n"
     manifest_supplement = store.put(
         b"module.exports = " + manifest.model_dump_json().encode() + b";\n"
@@ -342,6 +438,51 @@ def controlled_pair(tmp_path, framework, version):
         return replace(result, evidence_artifact=store.put(json.dumps(asdict(result)).encode()))
 
     return store, manifest, report, trace, target.id, execution(False), execution(True), expected
+
+
+@pytest.mark.parametrize("variant", ["missing_mapping", "missing_context"])
+def test_partial_t11_uncertainty_survives_sealed_cas_and_coverage_replay(tmp_path, variant):
+    from robo_minerador.validation.coverage import verify_association
+
+    store, manifest, report, trace, target, baseline, traced, _ = controlled_pair(
+        tmp_path, "jest", "29.7.0", **{variant: True}
+    )
+    result = validate_cases(report, report, manifest, target, baseline, traced, trace, store)
+    assert result.status == "evaluated" and len(result.case_ids) == 6
+    assert len(result.unresolved_case_ids) == 1
+    ledger = json.loads(store.get(result.evidence_id))
+    assert ledger["unresolved_case_ids"] == list(result.unresolved_case_ids)
+    assert verify_association(result, store) == (report, manifest)
+    with pytest.raises(ValueError, match="association provenance"):
+        verify_association(replace(result, unresolved_case_ids=()), store)
+
+
+def test_legacy_association_is_rederived_from_original_evidence_not_stamped_as_complete(tmp_path):
+    from robo_minerador.validation.cases import CaseValidation
+    from robo_minerador.validation.coverage import verify_association
+
+    store, manifest, report, trace, target, baseline, traced, _ = controlled_pair(
+        tmp_path, "jest", "29.7.0", missing_mapping=True
+    )
+    result = validate_cases(report, report, manifest, target, baseline, traced, trace, store)
+    ledger = json.loads(store.get(result.evidence_id))
+    for field in ("association_rule_version", "unresolved_case_ids", "uncertainty_reasons"):
+        ledger.pop(field, None)
+    legacy = CaseValidation(
+        result.status,
+        result.case_ids,
+        target,
+        result.reason,
+        store.put(json.dumps(ledger, sort_keys=True).encode()),
+    )
+    assert verify_association(legacy, store) == (report, manifest)
+    from robo_minerador.validation import coverage
+
+    replay = getattr(coverage, "replay_association", None)
+    assert replay is not None, "T14 must consume current uncertainty when replaying legacy T11"
+    current, _, _ = replay(legacy, store)
+    assert len(current.unresolved_case_ids) == 1
+    assert current.evidence_id != legacy.evidence_id
 
 
 @pytest.mark.parametrize("version", ["jest-29.7.0", "jest-30.0.0", "vitest-3.2.4", "vitest-4.0.0"])
