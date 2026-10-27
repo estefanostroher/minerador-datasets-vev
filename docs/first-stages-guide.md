@@ -1,9 +1,130 @@
 # Guia operacional: descoberta, triagem e extração
 
-Execute os comandos na raiz do projeto, em PowerShell 5.1. Execute cada bloco
-até terminar com sucesso antes de avançar. A interface atual é composta por
-serviços Python e pelo analyzer HTTP; o CLI integrado de mineração (T19) ainda
-não está disponível.
+Os quatro comandos manuais usam PowerShell 5.1 e o Python 3.12 da `.venv` do
+projeto. Podem ser chamados de outro diretório pelo caminho completo do script.
+Eles encadeiam os serviços Python existentes e o analyzer HTTP; o CLI integrado
+de mineração (T19) ainda não está disponível.
+
+## Comandos manuais principais
+
+Após `uv sync --locked`, execute na raiz do projeto:
+
+```powershell
+# 1. Descoberta: intervalo UTC semiaberto de cinco minutos; seleção máxima de 10.
+.\scripts\try_discovery.ps1 -CreatedFrom '2024-01-01T00:00:00Z' -CreatedUntil '2024-01-01T00:05:00Z' -MaxRepos 10
+
+# 2. Triagem: consome o último discovery.json válido deste projeto/output.
+.\scripts\try_screening.ps1
+
+# 3. Extração: consome o último screening.json válido; funciona sem token.
+.\scripts\try_extraction.ps1
+
+# 4. Conjunto: nova descoberta, triagem e extração, com as mesmas funções.
+.\scripts\try_first_stages.ps1 -MaxRepos 10
+```
+
+Cada script aceita `-Help`. Todos aceitam `-OutputDirectory` (padrão:
+`results/manual-stages`, relativo à raiz do projeto). Triagem e extração aceitam
+`-InputJson`; para evitar escolher implicitamente outra execução, use os caminhos
+impressos pelo comando anterior:
+
+```powershell
+.\scripts\try_screening.ps1 -InputJson 'C:\caminho\results\manual-stages\runs\<execution_id>\discovery.json' -MaxRepos 3
+.\scripts\try_extraction.ps1 -InputJson 'C:\caminho\results\manual-stages\runs\<execution_id>\screening.json'
+```
+
+Se o output foi personalizado, informe o mesmo `-OutputDirectory` nas etapas
+dependentes. `-MaxRepos` pode redefinir a seleção antes da primeira triagem; depois
+dela, a seleção fica congelada. O limite restringe a **demonstração processada**,
+não as consultas de descoberta nem seus indicadores `exhaustive`/`status`.
+São escolhidos repositórios completos com SHA, em ordem de `repo_id`.
+
+Se a triagem sofrer interrupção de infraestrutura, repita com o `-InputJson` da
+descoberta válida. O runner verifica a proveniência do checkpoint parcial interno,
+mantém sua seleção e reconstrói o progresso pelo replay dos serviços: relatórios
+concluídos não repetem descoberta nem download. Um JSON `interrupted` não é aceito
+como entrada explícita concluída; corrupção ou falha de integridade não é ignorada.
+
+Descoberta/triagem procuram `GITHUB_TOKEN` nesta ordem: processo, `.env`,
+`.env.example` (fallback autorizado para estes comandos manuais). Leem somente
+a chave, sem executar o arquivo. Uma declaração vazia/malformada interrompe a
+busca. Sem token, há prompt oculto apenas em terminal interativo; execução
+não interativa falha antes de criar estado ou fazer rede. Nada é gravado de
+volta nos arquivos de credenciais.
+Sem checkpoint compatível, a CLI informa a etapa faltante e o comando anterior
+antes de pedir credenciais. As mensagens usam orientações fixas, sem mostrar
+caminhos, conteúdo de arquivos ou texto de exceções.
+
+Cada execução possui diretório único `runs/<execution_id>/`, contendo:
+
+- `discovery.json`: manifesto completo, repositórios/SHA/licença, consultas,
+  contagens e referência CAS; `processing_scope` descreve a seleção parcial.
+- `screening.json`: configuração/run originais, seleção e relatórios completos,
+  avaliações, planos de comandos e referências dos snapshots.
+- `extraction.json`: candidatos, código/assinatura e offsets UTF-16, documentação
+  original, associações, contexto dos testes e métricas; ou razões explícitas
+  de `skipped`/`not_evaluated`.
+- `result.json`: checkpoint da última etapa executada, inclusive erro parcial
+  classificado por fase/tipo, sem texto da exceção.
+- `owner.json`, `state.sqlite3` e `artifacts/`: identidade e evidências locais.
+
+Os JSONs têm `schema_version: "1.0"`, `purpose: "manual"` e
+`not_final_dataset: true`. São publicados individualmente por arquivo temporário
+e substituição atômica. A publicação dos vários arquivos não é uma transação
+global; não há ponteiro global `latest`. A busca automática considera somente
+checkpoints compatíveis e íntegros dentro do output/projeto informado. Preserve
+todo o diretório junto; referências CAS e SQLite são relativas ao checkpoint.
+Checkpoints antigos de `manual-smoke` têm outro formato e não são importados:
+inicie uma descoberta com estes comandos.
+
+O gate exige H-R01–H-R04 positivos e plano estático resolvido. Rejeições geram
+`skipped`; pendências geram `not_evaluated`. A produção atualmente mantém
+H-R03/H-R04 pendentes de execução: ter `commands.status: planned` não é aprovação.
+Logo, uma execução real pode legitimamente não produzir candidato algum. Todos
+os resultados mantêm `accepted: false`, H-R05 pendente, `runtime_confirmed: false`
+e `coverage: null`. Não representam instâncias aceitas de dataset.
+
+Docker só é consultado se houver entrada aprovada com contexto/configuração
+estática suportados. Prepare o analyzer deste projeto quando necessário:
+
+```powershell
+docker compose --profile analyzer up -d --wait analyzer
+# Se os fontes/versões mudaram, build explícito:
+docker compose --profile analyzer build analyzer
+docker compose --profile analyzer up -d --wait analyzer
+# Alternativa explícita pelo runner, apenas se houver entrada apta:
+.\scripts\try_extraction.ps1 -BuildAnalyzer
+```
+
+O runner recusa analyzer ambíguo, não saudável ou com fontes/versões divergentes.
+Após uma extração concluída, repetir com o JSON de triagem ou de extração verifica
+offline o CAS completo, snapshots, plano, requisição, contexto, projeção e metadados
+congelados antes de retornar o mesmo JSON. Esse replay não exige token, Docker,
+health check ou nova transferência. Os metadados são evidência histórica da análise,
+não uma afirmação sobre o estado atual do daemon; corrupção continua sendo recusada.
+O HTTP fica privado, via Docker exec/Node fetch. Um helper temporário sem rede e
+sem token transfere/verifica os bytes do CAS no volume compartilhado, sob
+`/workspace/snapshots/manual-stages/<run_id>/<tree_hash>`; o analyzer lê esse volume
+read-only. O prefixo `/workspace/snapshots` respeita a restrição do serviço atual.
+Nenhum install/build/script/suíte de repositório é executado. Workspace ambíguo,
+framework indefinido, tsconfig ausente/com extends/references/JSONC e fontes de
+teste ausentes resultam em `not_evaluated`, sem inventar configuração.
+
+Verificação controlada (sem GitHub):
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/integration/test_manual_stages.py -m 'not docker' -q
+.\.venv\Scripts\python.exe -m pytest tests/integration/test_manual_stages.py -m docker -q
+```
+
+O teste Docker usa fonte da fixture `vitest-basic`, sem a matriz `versions/`, com
+escopo tsconfig explícito para quatro alvos; registra aprovações de engenharia
+como `source_kind: fixture`. Passa pelos mesmos gate, plano, transferência,
+`AnalysisClient`, `ExtractionService` e preservação de contexto, sem promover
+avaliações de um repositório GitHub real. O código de saída é 0 para checkpoint
+completo, 2 para argumentos/token ausentes ou nenhum checkpoint compatível,
+3 para parcial/infraestrutura e 4 para falha de integridade (inclusive checkpoint
+explícito corrompido). Confira também as razões por repositório.
 
 ## 1. O que cada etapa entrega
 
@@ -238,8 +359,8 @@ continua preservada, mas reprodução e elegibilidade ficam pendentes. O teste
 `test_context_roundtrip.py` mostra entradas congeladas, persistência e replay
 executáveis; seu transporte HTTP controlado não é uma prova de coleta real.
 
-A composição automática dessas entradas pertence ao futuro pipeline T19.
-Não há, nesta entrega, comando `miner extract` ou export final de dataset.
+Os comandos manuais acima compõem essas entradas de forma conservadora, sem
+implementar o pipeline T19. Não há comando `miner extract` ou export final de dataset.
 
 ## 7. Catálogo Docker e provas de runtime opcionais
 
