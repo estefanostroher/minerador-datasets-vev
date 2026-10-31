@@ -4,10 +4,11 @@ Projeto de pesquisa para construir um dataset de funções e métodos TypeScript
 
 ## Estado do projeto
 
-Somente a **descoberta de repositórios** está implementada: pacote Python, CLI, busca pela API do GitHub e saída JSONL com candidatos e diagnósticos. Um candidato ainda não é um repositório aprovado nem uma instância do dataset. A descoberta não clona projetos, analisa funções ou testes, instala dependências dos candidatos nem executa suas suítes.
+A **descoberta** e a **triagem estática** estão implementadas: pacote Python, CLI e uma saída JSONL por etapa. A descoberta encontra candidatos; a triagem inspeciona seus artefatos no SHA selecionado. Aprovação na triagem permite avançar para extração, mas ainda não representa uma instância do dataset. Nenhuma dessas etapas instala dependências dos candidatos ou executa suas suítes.
 
 - [Especificação aprovada — 2026-10-29](docs/superpowers/specs/2026-10-29-minerador-incremental-design.md)
 - [Plano da descoberta — 2026-10-29](docs/superpowers/plans/2026-10-29-descoberta.md)
+- [Plano da triagem — 2026-10-31](docs/superpowers/plans/2026-10-31-triagem.md)
 
 A integração com a API real foi **verificada em uma coleta pequena**, com cinco candidatos e cinco SHAs resolvidos, incluindo a conferência de um SHA e da data de criação no GitHub. O arquivo real já existente do pesquisador foi inspecionado e preservado; a reprodução adicional ocorreu em memória, sem nova escrita pela CLI. As evidências estão no [plano da descoberta](docs/superpowers/plans/2026-10-29-descoberta.md).
 
@@ -108,7 +109,7 @@ Por isso, a contagem de linhas não equivale à quantidade de repositórios. Par
 | `discovered_at` | Instante UTC de observação do candidato. |
 | `search_queries` | Consultas que encontraram o ID durante a coleta, sem repetição. |
 
-As próximas etapas deverão usar o SHA selecionado, mesmo se a branch mudar. O tratamento dos candidatos sem SHA será definido antes da triagem.
+As próximas etapas usam o SHA selecionado, mesmo se a branch mudar. Na triagem, candidatos sem SHA ficam `not_evaluated`, sem selecionar uma versão substituta.
 
 Exemplo **fictício e apenas ilustrativo** de uma linha de repositório, não de uma coleta executada nem de uma instância aprovada do dataset:
 
@@ -151,12 +152,44 @@ Após uma coleta, este comando mostra contagens e o último registro no terminal
 
 As contagens de candidatos e IDs únicos devem coincidir. Confira `run_finished` e todos os diagnósticos; o comando não substitui essa análise. Na verificação real registrada no plano, o arquivo existente continha sete linhas: cinco candidatos com SHA resolvido e os diagnósticos de início e fim, com estado `completed`. Também foram conferidos o SHA e a data de criação de um candidato contra o GitHub.
 
+## Triagem estática
+
+A triagem lê todos os candidatos de `results/01_descoberta.jsonl`, valida a integridade da entrada e consulta o GitHub no SHA registrado. A execução é sequencial. Os conteúdos ficam em memória durante a inspeção de cada candidato; não há clone, cache em disco, instalação ou execução de código dos projetos.
+
+Configure `GITHUB_TOKEN` no processo PowerShell. Se o token já estiver nas variáveis do usuário Windows, disponibilize-o ao processo sem imprimir seu valor:
+
+```powershell
+$env:GITHUB_TOKEN = [Environment]::GetEnvironmentVariable('GITHUB_TOKEN', 'User')
+.\.venv\Scripts\python.exe -m robo_minerador triage
+```
+
+A saída única é `results/02_triagem.jsonl`. Se existir, o comando exige `--overwrite`, que reinicia a etapa e substitui a saída; não há retomada:
+
+```powershell
+.\.venv\Scripts\python.exe -m robo_minerador triage --overwrite
+.\.venv\Scripts\python.exe -m robo_minerador triage --help
+```
+
+Nesta versão, a triagem aceita somente `--overwrite` e `--help`; não aceita `--limit`, caminhos personalizados ou workers. Os caminhos ficam em `config.TRIAGE_INPUT_PATH` e `config.TRIAGE_OUTPUT_PATH`. Configuração ou entrada inválida preserva a saída existente mesmo com `--overwrite`.
+
+Os cinco critérios são acesso público e artefatos recuperáveis, licença permitida, indício de implementação TypeScript, indícios de testes unitários e documentação/configuração de execução. Licenças aceitas: MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause e ISC. A verificação usa o endpoint de licença no SHA e confere caminho, blob e conteúdo; não é uma auditoria das licenças de todos os subpacotes. README, lockfile e popularidade não são requisitos.
+
+Cada registro `repository` contém `repository_id`, `repository_url`, `commit_sha`, `decision`, `criteria`, `readme`, `reasons` e `screened_at`. Critérios e decisão usam `approved`, `rejected` ou `not_evaluated`. Qualquer reprovação determina `rejected`; somente todos os critérios aprovados permitem `approved`. Interrupção antecipada após licença reprovada deixa os demais critérios não avaliados. Falhas operacionais e limites do analisador geram pendência, sem reprovação científica.
+
+A análise é conservadora e lexical: comandos personalizados, seletores e delegações de workspaces não resolvidos permanecem pendentes. Evidências distinguem caminhos candidatos, arquivos inspecionados e inspeção completa. A leitura de testes para ao encontrar evidência suficiente do mesmo pacote/framework; documentação é consultada como alternativa quando necessário. Limites por snapshot: 20 mil entradas, 512 leituras, 1 MiB por arquivo e 8 MiB acumulados. Árvores truncadas e links relevantes não inspecionados não são tratados como ausência de artefatos.
+
+Os diagnósticos `run_started`, `repository_error` e `run_finished` ficam no mesmo arquivo. O início registra o hash SHA-256 e o estado da descoberta. O fim informa as contagens `approved`, `rejected`, `not_evaluated`, `error_count` e o estado: `completed` sem pendências/erros, `partial` com pendências/erros e alguma avaliação, ou `failed` quando nenhum critério de nenhum candidato pôde ser avaliado. Rejeições científicas, por si só, não tornam a execução parcial. Os códigos de saída são 0 para `completed`, 1 para parcial/falha/escrita e 2 para entrada/configuração inválida ou saída existente não autorizada.
+
+A execução real foi interrompida depois de informar 625/1000 candidatos, com uma espera de aproximadamente 734 segundos pelo limite da API. A saída dessa execução não deve ser apresentada como coleta completa: confira a existência de `run_finished`. O progresso no terminal pode estar à frente das linhas persistidas devido ao buffer de escrita. Essa observação não é um benchmark de desempenho.
+
 ## Verificações locais
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_discovery.py -q
+.\.venv\Scripts\python.exe -m pytest tests/test_triage.py tests/test_triage_checks.py -q
 .\.venv\Scripts\python.exe -m robo_minerador --help
 .\.venv\Scripts\python.exe -m robo_minerador discover --help
+.\.venv\Scripts\python.exe -m robo_minerador triage --help
 git diff --check
 ```
 
@@ -164,7 +197,7 @@ git diff --check
 
 ## Etapas seguintes
 
-Somente a primeira etapa está implementada. Cada etapa terá uma única saída JSONL:
+Descoberta e triagem estão implementadas; as demais etapas ainda serão desenvolvidas. Cada etapa tem uma única saída JSONL:
 
 | Etapa | Responsabilidade | Arquivo |
 | --- | --- | --- |

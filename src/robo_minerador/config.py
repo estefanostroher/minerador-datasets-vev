@@ -6,6 +6,8 @@ from pathlib import Path
 MIN_REPOSITORY_DATE = "2025-01-01"
 MAX_REPOSITORIES = 1000
 OUTPUT_PATH = Path("results/01_descoberta.jsonl")
+TRIAGE_INPUT_PATH = OUTPUT_PATH
+TRIAGE_OUTPUT_PATH = Path("results/02_triagem.jsonl")
 
 
 def validate_config(min_date: str, limit: int, now: datetime) -> datetime:
