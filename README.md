@@ -9,6 +9,7 @@ A **descoberta** e a **triagem estática** estão implementadas: pacote Python, 
 - [Especificação aprovada — 2026-10-29](docs/superpowers/specs/2026-10-29-minerador-incremental-design.md)
 - [Plano da descoberta — 2026-10-29](docs/superpowers/plans/2026-10-29-descoberta.md)
 - [Plano da triagem — 2026-10-31](docs/superpowers/plans/2026-10-31-triagem.md)
+- [Concorrência na descoberta e triagem — 2026-10-31](docs/superpowers/plans/2026-10-31-concorrencia.md)
 
 A integração com a API real foi **verificada em uma coleta pequena**, com cinco candidatos e cinco SHAs resolvidos, incluindo a conferência de um SHA e da data de criação no GitHub. O arquivo real já existente do pesquisador foi inspecionado e preservado; a reprodução adicional ocorreu em memória, sem nova escrita pela CLI. As evidências estão no [plano da descoberta](docs/superpowers/plans/2026-10-29-descoberta.md).
 
@@ -58,8 +59,28 @@ As constantes ficam em `src/robo_minerador/config.py`:
 | `MIN_REPOSITORY_DATE` | `"2025-01-01"` | Data mínima inclusiva de criação do repositório, à meia-noite UTC. |
 | `MAX_REPOSITORIES` | `1000` | Máximo de IDs únicos antes da triagem; `--limit` o substitui apenas nessa execução. |
 | `OUTPUT_PATH` | `Path("results/01_descoberta.jsonl")` | Único arquivo de saída da descoberta; não há opção de caminho na CLI. |
+| `DEFAULT_WORKERS` | `4` | Concorrência padrão das duas etapas; `--workers` substitui nessa execução. |
+| `MAX_WORKERS` | `16` | Maior valor aceito para `--workers`. |
 
 O limite deve ser um inteiro positivo e pode superar 1000, por exemplo 10000, sem alterar o algoritmo. Ele não garante que existam candidatos suficientes nem define o tamanho final do dataset. Diagnósticos não consomem esse limite.
+
+### Concorrência nas duas etapas
+
+Ambos os comandos aceitam `--workers` de **1 a 16**, com padrão **4**. Use `1` para execução sequencial. Valores inválidos são recusados antes de consultar a API ou substituir a saída.
+
+```powershell
+.\.venv\Scripts\python.exe -m robo_minerador discover --limit 1000 --workers 4
+.\.venv\Scripts\python.exe -m robo_minerador triage --workers 4
+```
+
+Se a saída da etapa já existir e puder ser substituída, acrescente `--overwrite`. Isso reinicia o processamento; não retoma uma execução anterior.
+
+- **Descoberta:** busca, paginação e particionamento continuam sequenciais para preservar a seleção. Somente a recuperação dos SHAs dos novos candidatos de cada página ocorre em paralelo; a próxima página aguarda essa resolução. Não são submetidos IDs além do limite solicitado.
+- **Triagem:** até `workers` candidatos são inspecionados simultaneamente, cada um inteiro em sua thread. Os resultados são publicados na ordem de entrada; um candidato lento pode atrasar a publicação dos seguintes.
+- Cada thread reutiliza seu próprio cliente e suas conexões. A janela de tarefas é limitada; não há submissão antecipada de todos os candidatos. Somente o coordenador escreve o JSONL e atualiza contadores/progresso. Os clientes são fechados no encerramento.
+- Na execução concorrente, uma pausa de API reconhecida é compartilhada entre os clientes da etapa, incluindo a busca. `Retry-After` e reset de cota são respeitados; o terminal informa a espera. Cancelamento interrompe esperas coordenadas e tarefas pendentes; chamadas HTTP já em andamento podem aguardar seu término/timeout.
+
+Threads reduzem a espera por rede, mas não aumentam a cota da API nem reduzem, por si só, a quantidade de requisições. Não há garantia de 1000 candidatos em dez minutos. O transporte continua pela API, com conteúdos em memória, sem downloads compactados ou cache em disco. `run_started` registra o número configurado em `workers`.
 
 ## Como a descoberta seleciona candidatos
 
@@ -154,7 +175,7 @@ As contagens de candidatos e IDs únicos devem coincidir. Confira `run_finished`
 
 ## Triagem estática
 
-A triagem lê todos os candidatos de `results/01_descoberta.jsonl`, valida a integridade da entrada e consulta o GitHub no SHA registrado. A execução é sequencial. Os conteúdos ficam em memória durante a inspeção de cada candidato; não há clone, cache em disco, instalação ou execução de código dos projetos.
+A triagem lê todos os candidatos de `results/01_descoberta.jsonl`, valida a integridade da entrada e consulta o GitHub no SHA registrado. A execução usa quatro workers por padrão, controlados por `--workers`. Os conteúdos ficam em memória durante a inspeção de cada candidato; não há clone, cache em disco, instalação ou execução de código dos projetos.
 
 Configure `GITHUB_TOKEN` no processo PowerShell. Se o token já estiver nas variáveis do usuário Windows, disponibilize-o ao processo sem imprimir seu valor:
 
@@ -170,7 +191,7 @@ A saída única é `results/02_triagem.jsonl`. Se existir, o comando exige `--ov
 .\.venv\Scripts\python.exe -m robo_minerador triage --help
 ```
 
-Nesta versão, a triagem aceita somente `--overwrite` e `--help`; não aceita `--limit`, caminhos personalizados ou workers. Os caminhos ficam em `config.TRIAGE_INPUT_PATH` e `config.TRIAGE_OUTPUT_PATH`. Configuração ou entrada inválida preserva a saída existente mesmo com `--overwrite`.
+Nesta versão, a triagem aceita `--workers`, `--overwrite` e `--help`; não aceita `--limit` ou caminhos personalizados. Os caminhos ficam em `config.TRIAGE_INPUT_PATH` e `config.TRIAGE_OUTPUT_PATH`. Configuração ou entrada inválida preserva a saída existente mesmo com `--overwrite`.
 
 Os cinco critérios são acesso público e artefatos recuperáveis, licença permitida, indício de implementação TypeScript, indícios de testes unitários e documentação/configuração de execução. Licenças aceitas: MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause e ISC. A verificação usa o endpoint de licença no SHA e confere caminho, blob e conteúdo; não é uma auditoria das licenças de todos os subpacotes. README, lockfile e popularidade não são requisitos.
 
@@ -180,13 +201,14 @@ A análise é conservadora e lexical: comandos personalizados, seletores e deleg
 
 Os diagnósticos `run_started`, `repository_error` e `run_finished` ficam no mesmo arquivo. O início registra o hash SHA-256 e o estado da descoberta. O fim informa as contagens `approved`, `rejected`, `not_evaluated`, `error_count` e o estado: `completed` sem pendências/erros, `partial` com pendências/erros e alguma avaliação, ou `failed` quando nenhum critério de nenhum candidato pôde ser avaliado. Rejeições científicas, por si só, não tornam a execução parcial. Os códigos de saída são 0 para `completed`, 1 para parcial/falha/escrita e 2 para entrada/configuração inválida ou saída existente não autorizada.
 
-A execução real foi interrompida depois de informar 625/1000 candidatos, com uma espera de aproximadamente 734 segundos pelo limite da API. A saída dessa execução não deve ser apresentada como coleta completa: confira a existência de `run_finished`. O progresso no terminal pode estar à frente das linhas persistidas devido ao buffer de escrita. Essa observação não é um benchmark de desempenho.
+A execução real sequencial, anterior à concorrência, foi interrompida depois de informar 625/1000 candidatos, com uma espera de aproximadamente 734 segundos pelo limite da API. A saída dessa execução não deve ser apresentada como coleta completa: confira a existência de `run_finished`. O progresso no terminal pode estar à frente das linhas persistidas devido ao buffer de escrita. Essa observação não é um benchmark de desempenho. A implementação concorrente foi verificada com respostas simuladas e sincronização entre threads; não foi executada uma nova coleta real nem substituídos os resultados locais para medir seu desempenho.
 
 ## Verificações locais
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_discovery.py -q
 .\.venv\Scripts\python.exe -m pytest tests/test_triage.py tests/test_triage_checks.py -q
+.\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe -m robo_minerador --help
 .\.venv\Scripts\python.exe -m robo_minerador discover --help
 .\.venv\Scripts\python.exe -m robo_minerador triage --help

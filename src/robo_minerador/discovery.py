@@ -57,14 +57,14 @@ def _error_context(error: BaseException) -> dict:
     }
 
 
-def _run_started(start: datetime, end: datetime, limit: int) -> dict:
+def _run_started(start: datetime, end: datetime, limit: int, workers: int = 1) -> dict:
     """Registra os parâmetros e o limite superior inclusivo congelado da execução."""
     return _diagnostic(
         "run_started", "Descoberta iniciada.",
         min_repository_date=start.date().isoformat(),
         max_repositories=limit,
         upper_timestamp=_utc_timestamp(end - timedelta(seconds=1)),
-        strategy="direct_search_then_partition", ordering="updated_desc",
+        strategy="direct_search_then_partition", ordering="updated_desc", workers=workers,
     )
 
 
@@ -87,10 +87,11 @@ def _run_finished(records: list[dict], count: int, reason: str) -> dict:
 
 def failed_run_records(
     start: datetime, end: datetime, limit: int, error: BaseException,
+    *, workers: int = 1,
 ) -> list[dict]:
     """Preserva metadados quando a integração falha antes de iniciar a coleta."""
     records = [
-        _run_started(start, end, limit),
+        _run_started(start, end, limit, workers),
         _diagnostic("api_error", "Falha na conexão com a API do GitHub.",
                     **_error_context(error)),
     ]
@@ -124,9 +125,21 @@ def _merge_query(record: dict, query: str) -> None:
         record["search_queries"].append(query)
 
 
+def resolve_repository_sha(client, record: dict) -> tuple[str | None, BaseException | None]:
+    """Resolve o SHA do candidato e retorna apenas falhas esperadas como (None, erro).
+
+    Não altera o registro; erros de programação são propagados ao chamador.
+    """
+    try:
+        return resolve_commit_sha(client, record["repository"], record["default_branch"]), None
+    except EXPECTED_API_ERRORS as error:
+        return None, error
+
+
 def _collect_items(client, items: list[dict], query: str, limit: int,
-                   repositories: dict, records: list[dict]) -> None:
-    """Consolida os IDs da página e resolve o SHA somente na primeira observação."""
+                   repositories: dict, records: list[dict], *, resolve_many=None) -> None:
+    """Seleciona IDs únicos antes da resolução e publica os resultados na ordem original."""
+    selected = []
     for item in items:
         if len(repositories) >= limit:
             break
@@ -136,16 +149,22 @@ def _collect_items(client, items: list[dict], query: str, limit: int,
             continue
         record = _repository_record(item, query)
         repositories[repository_id] = record
+        selected.append(record)
+    if not selected:
+        return
+    results = (
+        (resolve_repository_sha(client, record) for record in selected)
+        if resolve_many is None else resolve_many(selected)
+    )
+    for record, (sha, error) in zip(selected, results, strict=True):
         records.append(record)
-        try:
-            record["commit_sha"] = resolve_commit_sha(
-                client, record["repository"], record["default_branch"],
-            )
+        if error is None:
+            record["commit_sha"] = sha
             record["sha_status"] = "resolved"
-        except EXPECTED_API_ERRORS as error:
+        else:
             records.append(_diagnostic(
                 "sha_unavailable", "Não foi possível recuperar o SHA da branch padrão.",
-                query=query, repository_id=repository_id, **_error_context(error),
+                query=query, repository_id=record["repository_id"], **_error_context(error),
             ))
 
 
@@ -160,7 +179,8 @@ def _check_incomplete(data: dict, query: str, records: list[dict]) -> None:
 
 
 def _collect_pages(client, query: str, first_page: dict, limit: int,
-                   repositories: dict, records: list[dict], can_split: bool) -> bool:
+                   repositories: dict, records: list[dict], can_split: bool,
+                   *, resolve_many=None) -> bool:
     """Aproveita páginas acessíveis e indica a necessidade de subdivisão como fallback."""
     data = first_page
     total_count = first_page["total_count"]
@@ -168,7 +188,8 @@ def _collect_pages(client, query: str, first_page: dict, limit: int,
         if page > 1:
             data = fetch_search_page(client, query, page)
         _check_incomplete(data, query, records)
-        _collect_items(client, data["items"], query, limit, repositories, records)
+        _collect_items(client, data["items"], query, limit, repositories, records,
+                       resolve_many=resolve_many)
         if data["incomplete_results"] and can_split and len(repositories) < limit:
             return True
         if (len(repositories) >= limit or not data["items"]
@@ -185,13 +206,18 @@ def _collect_pages(client, query: str, first_page: dict, limit: int,
     return False
 
 
-def collect_repositories(client, start: datetime, end: datetime, limit: int) -> list[dict]:
+def collect_repositories(client, start: datetime, end: datetime, limit: int,
+                         *, resolve_many=None, workers: int = 1) -> list[dict]:
     """Coleta IDs únicos por busca direta, com particionamento de criação como fallback.
 
     Recebe limites UTC em segundos no intervalo [start, end), com fim exclusivo.
+    resolve_many recebe a lista de novos registros selecionados de cada página e
+    retorna um par (sha, erro) por registro, na mesma ordem; falhas esperadas já
+    devem estar capturadas com SHA None. Sem callback, resolve sequencialmente.
+    workers registra a configuração nos metadados; o callback gerencia o executor.
     Falhas esperadas preservam candidatos; erros de programação são propagados.
     """
-    records = [_run_started(start, end, limit)]
+    records = [_run_started(start, end, limit, workers)]
     repositories = {}
     intervals = [(start, end)]
     reason = "search_exhausted"
@@ -204,6 +230,7 @@ def collect_repositories(client, start: datetime, end: datetime, limit: int) -> 
             can_split = (upper - lower).total_seconds() > 1
             needs_split = _collect_pages(
                 client, query, data, limit, repositories, records, can_split,
+                resolve_many=resolve_many,
             )
             if needs_split:
                 newer, older = split_interval(lower, upper)

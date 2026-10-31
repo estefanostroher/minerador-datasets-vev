@@ -1,10 +1,17 @@
 """Integração com o GitHub e avisos restritos de espera por limite da API."""
 
+import json
 import logging
 import re
+from threading import Event
 from typing import Any
 
 from github import Auth, Github
+from github.GithubRetry import GithubRetry
+from github.Requester import Requester
+from urllib3.exceptions import MaxRetryError
+
+from .concurrency import RateLimitGate
 
 
 class _RateLimitWaitFilter(logging.Filter):
@@ -44,10 +51,110 @@ def configure_retry_logging() -> None:
         logger.addHandler(handler)
 
 
-def create_client(token: str) -> Github:
-    """Cria um cliente com retry padrão; o chamador deve fechá-lo com close ou with."""
+class _CoordinatedRetry(GithubRetry):
+    """Delega reconhecimento ao PyGithub e compartilha apenas pausas de rate limit."""
+
+    def __init__(self, *, gate, cancel, **kwargs):
+        """Preserva o gate e o cancelamento ao construir políticas e seus clones."""
+        self.gate = gate
+        self.cancel = cancel
+        self._rate_limit_type = None
+        super().__init__(**kwargs)
+
+    def new(self, **kwargs):
+        """Mantém gate e evento em cada clone produzido pelo urllib3."""
+        return super().new(gate=self.gate, cancel=self.cancel, **kwargs)
+
+    def increment(self, method=None, url=None, response=None, error=None,
+                  _pool=None, _stacktrace=None):
+        """Publica limites reconhecidos mesmo se o retry esgotar, preservando o erro."""
+        self._rate_limit_type = None
+        try:
+            retry = super().increment(method, url, response, error, _pool, _stacktrace)
+        except MaxRetryError:
+            if response is not None and (
+                response.status == 429 or response.status == 403 and (
+                    "Retry-After" in response.headers or self._rate_limit_type is not None
+                )
+            ):
+                self._publish_limit(response)
+            raise
+        if response is not None and response.status in (403, 429):
+            self._publish_limit(response, retry)
+        return retry
+
+    def get_content(self, response, url):
+        """Lê o corpo uma única vez e retém apenas o tipo de limite reconhecido."""
+        content = super().get_content(response, url)
+        try:
+            message = json.loads(content).get("message")
+        except (ValueError, AttributeError):
+            return content
+        if isinstance(message, str) and Requester.isRateLimitError(message):
+            self._rate_limit_type = (
+                "primary" if Requester.isPrimaryRateLimitError(message) else "secondary"
+            )
+        return content
+
+    def _publish_limit(self, response, retry=None):
+        """Compartilha a espera explícita, calculada ou reconhecida no último retry."""
+        seconds = self.get_retry_after(response)
+        if seconds is None:
+            if retry is not None:
+                seconds = retry.get_backoff_time()
+            else:
+                seconds = self.secondary_rate_wait if self._rate_limit_type == "secondary" else 0
+        self.gate.defer(seconds)
+        headers = dict(response.headers)
+        if self._rate_limit_type == "primary":
+            headers["x-ratelimit-remaining"] = "0"
+        self.gate.observe(headers)
+
+    def sleep(self, response=None):
+        """Espera uma única vez; erros 5xx usam backoff local, não pausa global."""
+        seconds = self.get_retry_after(response) if response is not None else None
+        if seconds is None:
+            seconds = self.get_backoff_time()
+        if response is not None and response.status in (403, 429):
+            self.gate.wait(cancel=self.cancel)
+        else:
+            self.gate.wait_for(seconds, cancel=self.cancel)
+
+
+def create_client(token: str, gate: RateLimitGate | None = None) -> Github:
+    """Cria cliente isolado; gate opcional coordena chamadas e retries entre workers.
+
+    O chamador fecha o cliente. cancel_pending_requests interrompe suas esperas,
+    sem alterar a pausa compartilhada nem cancelar os demais clientes.
+    """
     configure_retry_logging()
-    return Github(auth=Auth.Token(token), timeout=30)
+    if gate is None:
+        return Github(auth=Auth.Token(token), timeout=30)
+    cancel = Event()
+    retry = _CoordinatedRetry(
+        gate=gate, cancel=cancel, total=Github.default_retry.total,
+        backoff_factor=Github.default_retry.backoff_factor,
+        status_forcelist=list(range(500, 600)) + [429],
+    )
+    client = Github(auth=Auth.Token(token), timeout=30, retry=retry)
+    request_json = client.requester.requestJson
+
+    def request_with_gate(*args, **kwargs):
+        """Preserva argumentos do requester, aguardando antes e observando a cota após."""
+        gate.wait(cancel=cancel)
+        status, headers, body = request_json(*args, **kwargs)
+        if 200 <= status < 400:
+            gate.observe(headers)
+        return status, headers, body
+
+    def cancel_pending_requests():
+        """Acorda todas as esperas deste cliente para permitir desligamento do pool."""
+        cancel.set()
+        gate.wake()
+
+    client.requester.requestJson = request_with_gate
+    client.cancel_pending_requests = cancel_pending_requests
+    return client
 
 
 def fetch_search_page(client: Github, query: str, page: int) -> dict[str, Any]:

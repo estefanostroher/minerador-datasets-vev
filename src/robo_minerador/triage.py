@@ -144,19 +144,23 @@ def _screen_candidate(client, candidate: dict, setup_error=None) -> tuple[dict, 
     }, error_record
 
 
-def _screen_records(client, candidates: list[dict], source: dict, setup_error=None):
+def _screen_records(client, candidates: list[dict], source: dict, setup_error=None,
+                    *, screen_many=None, workers: int = 1):
     """Emite início, resultados incrementais e fim com contagens científicas e operacionais."""
     yield diagnostic(
         "run_started", "Triagem estática iniciada.", input_path=source["path"],
         input_sha256=source["sha256"], input_status=source["status"],
         input_count=len(candidates), allowed_licenses=sorted(ALLOWED_LICENSES),
-        strategy="static_snapshot",
+        strategy="static_snapshot", workers=workers,
     )
     counts = {"approved": 0, "rejected": 0, "not_evaluated": 0}
     errors = 0
     any_evaluated = False
-    for index, candidate in enumerate(candidates, 1):
-        record, error = _screen_candidate(client, candidate, setup_error)
+    results = (
+        (_screen_candidate(client, candidate, setup_error) for candidate in candidates)
+        if screen_many is None else screen_many(candidates)
+    )
+    for index, (_, (record, error)) in enumerate(zip(candidates, results, strict=True), 1):
         counts[record["decision"]] += 1
         any_evaluated |= any(
             criterion["status"] != "not_evaluated"
@@ -177,15 +181,19 @@ def _screen_records(client, candidates: list[dict], source: dict, setup_error=No
     )
 
 
-def screen_repositories(client, candidates: list[dict], source: dict):
+def screen_repositories(client, candidates: list[dict], source: dict,
+                        *, screen_many=None, workers: int = 1):
     """Produz início, uma decisão por candidato, erros sanitizados e fim da triagem.
 
     Recebe candidatos e origem retornados por load_discovery; não escreve arquivos
-    nem fecha o cliente. Erros de programação são propagados ao chamador.
+    nem fecha o cliente. screen_many retorna pares (registro, erro) na ordem dos
+    candidatos; workers registra a configuração. Erros de programação são propagados.
     """
-    yield from _screen_records(client, candidates, source)
+    yield from _screen_records(client, candidates, source,
+                               screen_many=screen_many, workers=workers)
 
 
-def failed_screen_records(error: BaseException, candidates: list[dict], source: dict):
+def failed_screen_records(error: BaseException, candidates: list[dict], source: dict,
+                          *, workers: int = 1):
     """Preserva candidatos pendentes quando a criação do cliente falha operacionalmente."""
-    yield from _screen_records(None, candidates, source, setup_error=error)
+    yield from _screen_records(None, candidates, source, setup_error=error, workers=workers)

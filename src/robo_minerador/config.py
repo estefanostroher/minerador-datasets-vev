@@ -5,9 +5,18 @@ from pathlib import Path
 
 MIN_REPOSITORY_DATE = "2025-01-01"
 MAX_REPOSITORIES = 1000
+DEFAULT_WORKERS = 4
+MAX_WORKERS = 16
 OUTPUT_PATH = Path("results/01_descoberta.jsonl")
 TRIAGE_INPUT_PATH = OUTPUT_PATH
 TRIAGE_OUTPUT_PATH = Path("results/02_triagem.jsonl")
+
+
+def validate_workers(workers: int) -> int:
+    """Valida o número de workers sem aceitar booleanos ou conversões implícitas."""
+    if type(workers) is not int or not 1 <= workers <= MAX_WORKERS:
+        raise ValueError(f"O número de workers deve ser um inteiro entre 1 e {MAX_WORKERS}.")
+    return workers
 
 
 def validate_config(min_date: str, limit: int, now: datetime) -> datetime:

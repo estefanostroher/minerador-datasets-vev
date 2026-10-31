@@ -255,7 +255,7 @@ def test_cli_streams_results_and_closes_client(tmp_path, monkeypatch, failure):
     monkeypatch.setattr(cli, "create_client", client)
     monkeypatch.setattr(triage, "Snapshot", snapshot)
     monkeypatch.setattr(triage, "evaluate_snapshot", evaluate)
-    assert cli.main(["triage"]) == (0 if failure == "none" else 1)
+    assert cli.main(["triage", "--workers", "1"]) == (0 if failure == "none" else 1)
     records = [json.loads(line) for line in output.read_text(encoding="utf-8").splitlines()]
     assert records[0]["event"] == "run_started"
     assert records[-1]["event"] == "run_finished"
