@@ -90,7 +90,7 @@ def _run_extraction(args: argparse.Namespace) -> int:
             yield record
 
     try:
-        write_jsonl(config.EXTRACTION_OUTPUT_PATH, tracked_records(), ensure_ascii=True)
+        write_jsonl(config.EXTRACTION_OUTPUT_PATH, tracked_records(), ensure_ascii=True, compact=True)
     except OSError:
         print("Não foi possível gravar o arquivo de saída da extração.")
         return 1

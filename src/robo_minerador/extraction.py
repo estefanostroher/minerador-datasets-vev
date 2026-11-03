@@ -7,6 +7,7 @@ from .concurrency import RateLimitGate, WorkerPool
 from .discovery import EXPECTED_API_ERRORS, _error_context
 from .extraction_analyzer import Analyzer, AnalyzerUnavailable
 from .extraction_snapshot import collect_context
+from .extraction_format import compact_records
 from .github_api import create_client
 from .triage import _timestamp
 
@@ -89,6 +90,11 @@ def _extract_candidate(client, candidate: dict, analyzer: Analyzer, setup_error=
 
 
 def extract_repositories(token: str, candidates: list[dict], source: dict, settings: dict, *, workers: int = 4):
+    """Publica v2 preservando ordem, análise interna e cancelamento dos recursos."""
+    yield from compact_records(_raw_extract_repositories(token, candidates, source, settings, workers=workers))
+
+
+def _raw_extract_repositories(token: str, candidates: list[dict], source: dict, settings: dict, *, workers: int = 4):
     """Publica grupos na ordem de entrada e fecha recursos antes da contagem final.
 
     error_count conta cada diagnóstico repository_error (issues únicas por

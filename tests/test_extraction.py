@@ -10,6 +10,7 @@ import pytest
 
 from robo_minerador import cli, concurrency, config, extraction
 from robo_minerador.extraction_analyzer import preflight
+from robo_minerador.extraction_format import expand_instance
 from test_extraction_input import candidate, save_rows, triage_rows
 
 SOURCE = {"path": "triage.jsonl", "sha256": "a" * 64, "status": "completed", "input_count": 3}
@@ -139,6 +140,40 @@ def test_zero_eligible_has_no_network(monkeypatch):
     assert rows[-1]["status"] == "completed" and rows[-1]["repository_count"] == 0
 
 
+def test_catalog_order_ignores_worker_completion(monkeypatch):
+    """Atribui motivos pela publicação ordenada mesmo com conclusão inversa dos workers."""
+    from test_extraction_format import instance, repository
+
+    second_done = Event()
+    completed = []
+
+    def factory(token, gate):
+        """Cria somente cliente local rastreável sem conexão externa."""
+        return Client()
+
+    def extract(client, row, analyzer, setup_error=None):
+        """Conclui o segundo primeiro e fornece motivos distintos em cada grupo."""
+        identity = row["repository_id"]
+        if identity == 1:
+            assert second_done.wait(5)
+        completed.append(identity)
+        if identity == 2:
+            second_done.set()
+        repo = repository(identity)
+        unit = instance(repo)
+        unit["criteria"]["first"]["reason"] = f"motivo-{identity}"
+        return [repo, unit]
+
+    monkeypatch.setattr(extraction, "Analyzer", EmptyAnalyzer)
+    monkeypatch.setattr(extraction, "create_client", factory)
+    monkeypatch.setattr(extraction, "_extract_candidate", extract)
+    rows = list(extraction.extract_repositories("token", [candidate(1), candidate(2)], SOURCE, SETTINGS, workers=2))
+    assert completed == [2, 1]
+    definitions = [row for row in rows if row["record_type"] == "criterion_reason"]
+    assert [(row["reason_id"], row["text"]) for row in definitions] == [
+        ("R001", "motivo-1"), ("R002", "pendente\ud800"), ("R003", "motivo-2")]
+
+
 @pytest.mark.parametrize("failure", ["input", "preflight", "token", "exists"])
 def test_output_sentinel_survives_before_open(tmp_path, monkeypatch, failure):
     """Preserva saída existente diante de entrada/configuração inválida ou recusa explícita."""
@@ -204,14 +239,33 @@ def test_cli_real_jsonl_and_origin(tmp_path, monkeypatch, test_name):
     monkeypatch.setattr(cli, "preflight", configured)
     monkeypatch.setattr(extraction, "create_client", factory)
     monkeypatch.setattr(extraction, "collect_context", collect)
+    original_extract = extraction._extract_candidate
+    raw_instances = []
+
+    def capture_candidate(*args, **kwargs):
+        """Captura evidências legadas da análise real para comparação integral."""
+        group = original_extract(*args, **kwargs)
+        raw_instances.extend(row for row in group if row["record_type"] == "instance")
+        return group
+
+    monkeypatch.setattr(extraction, "_extract_candidate", capture_candidate)
     assert cli.main(["extract", "--workers", "1"]) == 0
     rows = [json.loads(line) for line in output_path.read_text(encoding="utf-8").splitlines()]
-    assert [row["record_type"] for row in rows] == ["diagnostic", "repository", "instance", "diagnostic"]
+    assert rows[0]["schema_version"] == rows[-1]["schema_version"] == 2
+    reasons = {row["reason_id"]: row["text"] for row in rows if row["record_type"] == "criterion_reason"}
+    published = next(row for row in rows if row["record_type"] == "instance")
+    instance = expand_instance(published, rows[1], reasons)
+    assert [instance] == raw_instances
     assert rows[1]["context"]["files"] == texts
-    assert rows[2]["repository_id"] == rows[1]["repository_id"] == 1
-    assert rows[2]["commit_sha"] == candidate()["commit_sha"]
-    assert rows[2]["validation"]["executed_test_cases"] is None
-    assert rows[2]["tests"][0]["name"] == json.loads('"' + test_name + '"')
+    assert instance["repository_id"] == rows[1]["repository_id"] == 1
+    assert instance["commit_sha"] == candidate()["commit_sha"]
+    assert instance["validation"]["executed_test_cases"] is None
+    assert instance["tests"][0]["name"] == json.loads('"' + test_name + '"')
+    assert instance["context_paths"] == sorted(item["path"] for item in texts)
+    assert instance["function"]["reference_code"] in texts[0]["content"]
+    assert "context_paths" not in published and "commit_sha" not in published
+    assert output_path.read_text(encoding="utf-8").splitlines() == [
+        json.dumps(row, ensure_ascii=True, separators=(",", ":")) for row in rows]
     assert rows[-1]["event"] == "run_finished" and rows[-1]["status"] == "completed"
     assert rows[-1]["instance_count"] == rows[-1]["approved"] == 1
 
@@ -243,7 +297,7 @@ def test_write_failure_closes_generator_pool_and_clients(tmp_path, monkeypatch):
         """Fornece snapshot vazio sem conexão com o GitHub."""
         return [], []
 
-    def fail_write(path, records, *, ensure_ascii=False):
+    def fail_write(path, records, *, ensure_ascii=False, compact=False):
         """Interrompe após abrir o pool e publicar o primeiro contexto."""
         for record in records:
             if record["record_type"] == "repository":

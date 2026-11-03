@@ -20,7 +20,7 @@ Documentação exige descrição original do comportamento (inclusive tags descr
 
 H-F06 rejeita apenas formas comprovadas: retorno constante independente de entradas, acessor simples e delegação direta sem lógica adicional. Não usar um limiar numérico de complexidade. Casos não comprováveis permanecem pendentes. A resolução estática de contexto local não aprova ausência de serviços externos nem executabilidade.
 
-## Contrato de saída
+## Contrato de saída v1 (histórico)
 
 Única saída: `results/03_extracao.jsonl`, UTF-8, um objeto por linha. Recusar arquivo existente sem `--overwrite`; entrada/configuração inválida preserva saída mesmo com essa opção. Sem retomada/anexação.
 
@@ -31,6 +31,19 @@ H-F06 rejeita apenas formas comprovadas: retorno constante independente de entra
 O código de referência e a documentação ficam na instância; arquivos completos compartilhados ficam no registro repository, vinculados por ID/SHA/caminho. Ordem por repositório: contexto primeiro, instâncias em ordem de caminho/posição, diagnósticos locais. A construção final consolidará instâncias integrais. Aprovação aqui significa encaminhamento à validação, não instância final.
 
 Estado completed significa processamento da entrada elegível sem limitações operacionais/análises pendentes; rejeições científicas não causam partial. Partial sinaliza pendência/erro com processamento útil; failed sinaliza impossibilidade total de análise. Entrada partial permanece registrada, não implica cobertura dos candidatos ausentes. Nenhum elegível é uma execução completed vazia. Códigos de saída: 0 completed, 1 partial/failed/escrita, 2 configuração/entrada inválida/saída existente.
+
+## Adendo aprovado — publicação v2
+
+Novas execuções seguem o [contrato enxuto v2](../plans/2026-11-02-extracao-saida-v2.md), que substitui apenas a publicação v1 descrita acima. Não altera protocolo interno Node, critérios científicos, instâncias selecionadas ou IDs.
+
+- Início e fim declaram schema_version=2. Arquivo sem versão é legado v1; não anexar nem misturar versões.
+- URL/SHA/horário e instance_defaults.validation ficam no repository. Instance conserva repository_id/instance_id/decision/function/documentation/tests; context_ref=repository substitui somente listas idênticas aos caminhos completos ordenados do contexto. Subconjuntos/ordens diferentes e valores de validação distintos permanecem explícitos.
+- criterion_reason define reason_id/text antes da primeira referência; criteria conserva status e usa reason_ref. reasons é omitido somente se for reconstruível exatamente dos critérios.
+- Issues são agrupadas por payload integral exceto path, distinguindo globais de arquivos e preservando todas as ocorrências/caminhos/detalhes. Diagnostics locais usam issue_ref e contagem, com intervalo de observação quando necessário. Falhas sem issue correspondente mantêm seus detalhes.
+- error_count conta diagnósticos publicados; issue_count conta ocorrências originais representadas. Estados e contagens científicas permanecem iguais.
+- expand_instance recompõe os valores completos a partir do repository e catálogo, sem inventar referências. Escrita v2 tem separadores compactos; descoberta e triagem mantêm seus defaults.
+
+O pesquisador interrompeu a coleta v1 e excluiu results/03_extracao.jsonl durante a implementação deste adendo. Não foi feita conversão ou nova coleta; a próxima execução produzirá v2 do início ao fim.
 
 ## Desenvolvimento e verificação
 
