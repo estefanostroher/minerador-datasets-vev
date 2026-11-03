@@ -4,12 +4,14 @@ Projeto de pesquisa para construir um dataset de funções e métodos TypeScript
 
 ## Estado do projeto
 
-A **descoberta** e a **triagem estática** estão implementadas: pacote Python, CLI e uma saída JSONL por etapa. A descoberta encontra candidatos; a triagem inspeciona seus artefatos no SHA selecionado. Aprovação na triagem permite avançar para extração, mas ainda não representa uma instância do dataset. Nenhuma dessas etapas instala dependências dos candidatos ou executa suas suítes.
+A **descoberta**, a **triagem estática** e a **extração estática concorrente** estão implementadas: pacote Python, CLI e uma saída JSONL por etapa. A descoberta encontra candidatos; a triagem inspeciona seus artefatos no SHA selecionado; a extração identifica funções/métodos, documentação original e chamadas diretas em testes. Aprovação na extração permite avançar para validação, mas ainda não representa uma instância final do dataset. Essas três etapas não instalam dependências dos candidatos nem executam suas suítes.
 
 - [Especificação aprovada — 2026-10-29](docs/superpowers/specs/2026-10-29-minerador-incremental-design.md)
 - [Plano da descoberta — 2026-10-29](docs/superpowers/plans/2026-10-29-descoberta.md)
 - [Plano da triagem — 2026-10-31](docs/superpowers/plans/2026-10-31-triagem.md)
 - [Concorrência na descoberta e triagem — 2026-10-31](docs/superpowers/plans/2026-10-31-concorrencia.md)
+- [Especificação da extração — 2026-11-02](docs/superpowers/specs/2026-11-02-extracao-design.md)
+- [Plano e evidências da extração — 2026-11-02](docs/superpowers/plans/2026-11-02-extracao.md)
 
 A integração com a API real foi **verificada em uma coleta pequena**, com cinco candidatos e cinco SHAs resolvidos, incluindo a conferência de um SHA e da data de criação no GitHub. O arquivo real já existente do pesquisador foi inspecionado e preservado; a reprodução adicional ocorreu em memória, sem nova escrita pela CLI. As evidências estão no [plano da descoberta](docs/superpowers/plans/2026-10-29-descoberta.md).
 
@@ -203,6 +205,66 @@ Os diagnósticos `run_started`, `repository_error` e `run_finished` ficam no mes
 
 A execução real sequencial, anterior à concorrência, foi interrompida depois de informar 625/1000 candidatos, com uma espera de aproximadamente 734 segundos pelo limite da API. A saída dessa execução não deve ser apresentada como coleta completa: confira a existência de `run_finished`. O progresso no terminal pode estar à frente das linhas persistidas devido ao buffer de escrita. Essa observação não é um benchmark de desempenho. A implementação concorrente foi verificada com respostas simuladas e sincronização entre threads; não foi executada uma nova coleta real nem substituídos os resultados locais para medir seu desempenho.
 
+## Extração estática concorrente
+
+A extração lê `results/02_triagem.jsonl` e processa somente repositórios `approved`, sempre no SHA original. O arquivo de entrada é validado integralmente antes da rede e da abertura da saída: estrutura, critérios/decisões, contagens, IDs únicos, URLs, SHAs e diagnósticos. O hash dos bytes originais e o estado da triagem ficam no diagnóstico inicial. A entrada local foi aceita com **1000 repositórios, 89 aprovados e estado `partial`**; pendências da triagem não são reclassificadas nem processadas como aprovadas.
+
+### Preparação e comandos
+
+Além da instalação Python editável descrita acima, a extração requer **Node.js >=22** e a dependência confiável **TypeScript 6.0.3**. Na raiz deste checkout, instale o auxiliar com o lockfile versionado:
+
+```powershell
+node --version
+Test-Path -LiteralPath ".\src\robo_minerador\typescript"
+npm ci --prefix ".\src\robo_minerador\typescript"
+```
+
+Essa instalação pertence ao próprio minerador. Dependências dos repositórios candidatos não são instaladas. A CLI confere Node, auxiliar e versão de TypeScript antes de substituir qualquer saída.
+
+```powershell
+$env:GITHUB_TOKEN = [Environment]::GetEnvironmentVariable('GITHUB_TOKEN', 'User')
+.\.venv\Scripts\python.exe -m robo_minerador extract --workers 4
+.\.venv\Scripts\python.exe -m robo_minerador extract --help
+```
+
+A saída única é `results/03_extracao.jsonl`. Se já existir e puder ser substituída intencionalmente, acrescente `--overwrite`. Não há retomada, anexação, `--limit` ou caminhos personalizados. Configuração/entrada inválida preserva a saída mesmo com `--overwrite`.
+
+`--workers` aceita **1 a 16**, padrão **4**. Cada tarefa recupera e analisa um repositório inteiro, com um cliente GitHub por thread e no máximo um processo Node ativo por tarefa. A janela de tarefas é limitada e as pausas de API são compartilhadas. O coordenador publica contexto e instâncias na ordem dos repositórios de entrada; um projeto lento pode atrasar a publicação dos seguintes. Cancelamento mata os filhos Node antes de aguardar as threads; chamadas HTTP já em voo podem aguardar seu timeout.
+
+### O que é extraído
+
+O auxiliar usa a **TypeScript Compiler API** sobre fontes em memória. Não importa módulos candidatos nem executa scripts, configurações ou testes. Identifica funções declaradas e métodos concretos de classes, inclusive classes expressão, preservando implementação, assinatura, caminhos e linhas. Funções expressão, arrows, construtores e accessors não são unidades desta versão.
+
+- Resolve imports locais, aliases e reexports; analisa configurações TypeScript JSON/JSONC sem executá-las.
+- Reconhece APIs de Vitest, Jest, Mocha e `node:test` com evidência de imports ou configuração/manifests. Uma função local chamada `test` ou `it` não comprova um teste.
+- Associa chamadas diretas resolvidas no callback do teste. Helpers, hooks, callbacks diferidos, receptores ambíguos, mocks/spies e registros não comprovados não aprovam a associação original. Testes ignorados preservam seus metadados e, isoladamente, não aprovam o critério.
+- Preserva documentação anexada descritiva e trechos externos explicitamente vinculados por caminho/símbolo/link. Não gera descrições nem usa apenas semelhança de nomes. Descrições curtas são aceitas; metadados/tipos sem descrição não bastam. Vínculos ambíguos ficam pendentes.
+- Rejeita apenas formas de trivialidade comprováveis de H-F06. Outras formas cuja lógica não pôde ser comprovada ficam pendentes, sem limiar de complexidade.
+
+A extração **não confirma testes aprovados, quatro casos executados, ausência de serviços externos ou ambiente reproduzível em execução**. Os campos `validation.status`, `executed_test_cases`, `suite_passed` e `external_services` permanecem, respectivamente, `not_evaluated`, `null`, `null` e `not_evaluated`. Tabelas parametrizadas não são convertidas em contagem de execuções.
+
+### Registros do JSONL
+
+| `record_type` | Conteúdo |
+| --- | --- |
+| `diagnostic` | `stage="extraction"`, início/fim, falhas e limitações. O início registra entrada, SHA-256, estado anterior, contagens e workers; o fim registra repositórios, instâncias, decisões, erros e estado. |
+| `repository` | ID, URL, SHA, `extraction_status`, analisador/versão, contexto compartilhado, issues e resumo. `context.files` preserva caminho, conteúdo original e SHA-256; inclui dependências locais e referências não resolvidas. Sempre existe um registro por aprovado processado, inclusive quando não há instâncias. |
+| `instance` | Origem, `instance_id`, decisão, função/implementação, documentação, testes com evidência da chamada/declaração resolvida, caminhos de contexto, critérios e validação ainda não executada. |
+
+Cada objeto ocupa uma linha. A saída é UTF-8 com escapes JSON para caracteres não ASCII, preservando inclusive nomes JavaScript com surrogates isolados; os valores originais são recuperados ao decodificar o JSON. Os arquivos completos compartilhados ficam no registro do repositório, evitando sua repetição por função; a construção final os consolidará nas instâncias pertinentes.
+
+O `instance_id` é SHA-256 da identidade do repositório, SHA do commit, caminho, intervalo de linhas, ordinal lexical entre declarações na mesma linha, tipo e nome da unidade. Não depende do horário ou da ordem de conclusão das threads. Os critérios são `identifiable_implementation`, `associated_documentation`, `direct_test_association`, `nontrivial_implementation` e `preserved_local_context`. Qualquer rejeição determina `rejected`; todos aprovados permitem `approved`; os demais casos ficam `not_evaluated`.
+
+`completed` indica processamento sem limitações/pendências; reprovações científicas isoladas não tornam a execução parcial. `partial` indica issues ou critérios pendentes com análise útil; `failed` indica que nenhum repositório pôde ser analisado. Zero aprovados na entrada produz uma execução vazia `completed`. `error_count` conta os diagnósticos `repository_error`, incluindo limitações do analisador e erros de fechamento, não apenas erros HTTP. Códigos de saída: **0** completed, **1** partial/failed/escrita, **2** entrada/configuração inválida ou saída existente sem autorização. O estado anterior `partial` permanece explícito como proveniência, sem prometer cobertura dos candidatos que não avançaram.
+
+### Limites e evidências
+
+Por snapshot: **20 mil entradas, 512 leituras, 1 MiB por arquivo e 8 MiB acumulados**. Por processo Node: **512 MiB de heap e 180 segundos**. O orçamento de heap não limita toda a memória Python/Node somada; aumentar workers aumenta o consumo possível. O contexto é textual e fica em memória. Links/submódulos, contexto binário/desconhecido, referências ausentes e orçamentos excedidos são pendências explícitas.
+
+A política inicial é conservadora: qualquer omissão de contexto pode deixar todas as instâncias do repositório pendentes, inclusive quando o arquivo omitido poderia ser irrelevante para determinada função. APIs estendidas/dinâmicas, callbacks por referência e configurações de framework não interpretáveis também podem impedir aprovação. Esses casos exigem análise adicional; não equivalem a ausência comprovada de artefatos.
+
+Uma inspeção real em memória de `yanfengliu/3d-maker`, SHA `3cc524da249b7fc3c4c0b0ec42612056ee8d68f5`, recuperou **67 arquivos** de uma árvore com 69 blobs e identificou **111 unidades: 0 aprovadas, 2 rejeitadas e 109 não avaliadas**, com estado `partial`. Foram registrados dois arquivos de contexto não inspecionados, seis vínculos documentais ambíguos, uma issue de testes incertos e 17 de implementação não comprovada. Isso verifica a integração real e suas limitações, sem validar testes nem representar uma coleta completa. A saída oficial `03_extracao.jsonl` não foi gerada por essa inspeção; descoberta e triagem foram preservadas.
+
 ## Verificações locais
 
 ```powershell
@@ -212,6 +274,8 @@ A execução real sequencial, anterior à concorrência, foi interrompida depois
 .\.venv\Scripts\python.exe -m robo_minerador --help
 .\.venv\Scripts\python.exe -m robo_minerador discover --help
 .\.venv\Scripts\python.exe -m robo_minerador triage --help
+.\.venv\Scripts\python.exe -m robo_minerador extract --help
+npm test --prefix ".\src\robo_minerador\typescript"
 git diff --check
 ```
 
@@ -219,7 +283,7 @@ git diff --check
 
 ## Etapas seguintes
 
-Descoberta e triagem estão implementadas; as demais etapas ainda serão desenvolvidas. Cada etapa tem uma única saída JSONL:
+Descoberta, triagem e extração estão implementadas; validação, deduplicação e construção ainda serão desenvolvidas. Cada etapa tem uma única saída JSONL:
 
 | Etapa | Responsabilidade | Arquivo |
 | --- | --- | --- |
@@ -232,7 +296,7 @@ Descoberta e triagem estão implementadas; as demais etapas ainda serão desenvo
 
 A extração associa testes às funções por chamadas diretas e preserva seu contexto; ela não comprova que esses testes passam. A futura validação instalará dependências, compilará quando necessário e executará a suíte completa **uma vez**, contando os casos parametrizados efetivamente executados. Cada função deverá ter pelo menos quatro casos válidos diretamente associados. A primeira falha de instalação, compilação ou execução excluirá o repositório, sem ajustes corretivos.
 
-Os arquivos intermediários serão enxutos, ligados por `repository_id` e `repository_url`; a partir da extração, `instance_id` distinguirá funções do mesmo projeto. Somente a construção final consolidará todos os atributos. A escolha da ferramenta de análise TypeScript e os detalhes de execução das etapas futuras ainda dependem de planejamento.
+Os arquivos intermediários são ligados por `repository_id` e `repository_url`; a partir da extração, `instance_id` distingue funções do mesmo projeto. Somente a construção final consolidará todos os atributos. A extração usa TypeScript Compiler API; os detalhes de execução da validação e das etapas posteriores ainda dependem de planejamento, incluindo a confirmação em execução das associações estáticas e a contagem de casos.
 
 ### Desenvolvimento e revisão
 

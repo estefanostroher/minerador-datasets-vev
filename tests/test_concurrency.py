@@ -272,6 +272,45 @@ def test_consumed_worker_failure_is_not_reported_twice():
     assert not getattr(defect, "__notes__", [])
 
 
+@pytest.mark.parametrize("original", [False, True])
+def test_cancel_callback_failure_preserves_cleanup_and_original(original):
+    """Fecha clientes após falha do callback único e preserva a exceção original ativa."""
+    calls, clients = [], []
+    defect = ValueError("defeito no cancelamento")
+    failure = RuntimeError("defeito original")
+
+    def factory():
+        """Registra clientes que devem fechar mesmo quando o callback falha."""
+        client = Client()
+        clients.append(client)
+        return client
+
+    def cancel():
+        """Registra chamada única antes de simular defeito na limpeza externa."""
+        calls.append(get_ident())
+        raise defect
+
+    pool = WorkerPool(1, factory, on_cancel=cancel)
+
+    def operation(item):
+        """Cria uma sessão real do pool antes do fechamento do coordenador."""
+        pool.get_client()
+        return item
+
+    with pytest.raises(RuntimeError if original else ValueError) as caught:
+        with pool:
+            assert list(pool.map_ordered(operation, [1])) == [1]
+            if original:
+                raise failure
+    pool.close()
+    assert caught.value is (failure if original else defect)
+    assert calls == [get_ident()]
+    assert clients and all(client.closed_by == [get_ident()] for client in clients)
+    assert not pool._pending
+    if original:
+        assert any("ValueError: defeito no cancelamento" in note for note in failure.__notes__)
+
+
 @pytest.mark.parametrize("error", [CancelledError(), GithubException(503, {})])
 def test_unconsumed_expected_failure_is_ignored_on_close(error):
     """Mantém cancelamentos e falhas esperadas de tarefa fora dos defeitos de limpeza."""

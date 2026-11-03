@@ -11,6 +11,9 @@ from .discovery import (
     resolve_repository_sha,
 )
 from .github_api import create_client
+from .extraction import extract_repositories
+from .extraction_analyzer import preflight
+from .extraction_input import load_triage
 from .jsonl import write_jsonl
 from .triage import (
     _screen_candidate, diagnostic, failed_screen_records, load_discovery, screen_repositories,
@@ -29,7 +32,7 @@ def _workers_argument(value: str) -> int:
 
 def _parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     """Interpreta o comando da etapa e suas opções de execução."""
-    parser = argparse.ArgumentParser(description="Descoberta e triagem de repositórios no GitHub.")
+    parser = argparse.ArgumentParser(description="Descoberta, triagem e extração de repositórios no GitHub.")
     commands = parser.add_subparsers(dest="command", required=True)
     discover = commands.add_parser("discover", help="Descobrir repositórios candidatos.")
     discover.add_argument(
@@ -45,13 +48,57 @@ def _parse_arguments(argv: list[str] | None) -> argparse.Namespace:
         "--overwrite", action="store_true",
         help="Substituir intencionalmente a saída existente.",
     )
-    for command in (discover, triage):
+    extract = commands.add_parser("extract", help="Extrair funções, documentação e testes no SHA aprovado.")
+    extract.add_argument("--overwrite", action="store_true",
+                         help="Substituir intencionalmente a saída existente.")
+    for command in (discover, triage, extract):
         command.add_argument(
             "--workers", type=_workers_argument, default=config.DEFAULT_WORKERS,
             help=f"Threads de consulta (1 a {config.MAX_WORKERS}; padrão {config.DEFAULT_WORKERS}). "
                  "Use 1 para execução sequencial.",
         )
     return parser.parse_args(argv)
+
+
+def _run_extraction(args: argparse.Namespace) -> int:
+    """Valida entrada e auxiliar antes da escrita e mantém o gerador cancelável."""
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    try:
+        if not token:
+            raise ValueError("Defina GITHUB_TOKEN no ambiente antes da extração.")
+        config.validate_workers(args.workers)
+        candidates, source = load_triage(config.EXTRACTION_INPUT_PATH)
+        settings = preflight()
+        if config.EXTRACTION_OUTPUT_PATH.exists() and not args.overwrite:
+            print("A saída já existe. Use --overwrite para autorizar a substituição.")
+            return 2
+    except (ValueError, OSError) as error:
+        if isinstance(error, ValueError):
+            print(f"Entrada ou configuração inválida: {error}")
+        else:
+            print("Não foi possível ler a entrada ou verificar a configuração da extração.")
+        return 2
+    records = extract_repositories(token, candidates, source, settings, workers=args.workers)
+    result = None
+
+    def tracked_records():
+        """Registra o resumo sem reter todo o JSONL na memória do coordenador."""
+        nonlocal result
+        for record in records:
+            if record.get("event") == "run_finished":
+                result = record
+            yield record
+
+    try:
+        write_jsonl(config.EXTRACTION_OUTPUT_PATH, tracked_records(), ensure_ascii=True)
+    except OSError:
+        print("Não foi possível gravar o arquivo de saída da extração.")
+        return 1
+    finally:
+        records.close()
+    print(f"Repositórios: {result['repository_count']}; instâncias: {result['instance_count']}; "
+          f"estado: {result['status']}; saída: {config.EXTRACTION_OUTPUT_PATH}")
+    return 0 if result["status"] == "completed" else 1
 
 
 def _triage_records(token: str, candidates: list[dict], source: dict, workers: int = 1):
@@ -158,6 +205,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.command == "triage":
         return _run_triage(args)
+    if args.command == "extract":
+        return _run_extraction(args)
     now = datetime.now(timezone.utc).replace(microsecond=0)
     token = os.environ.get("GITHUB_TOKEN", "").strip()
     try:

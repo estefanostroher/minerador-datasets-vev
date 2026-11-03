@@ -10,6 +10,8 @@ MAX_WORKERS = 16
 OUTPUT_PATH = Path("results/01_descoberta.jsonl")
 TRIAGE_INPUT_PATH = OUTPUT_PATH
 TRIAGE_OUTPUT_PATH = Path("results/02_triagem.jsonl")
+EXTRACTION_INPUT_PATH = TRIAGE_OUTPUT_PATH
+EXTRACTION_OUTPUT_PATH = Path("results/03_extracao.jsonl")
 
 
 def validate_workers(workers: int) -> int:

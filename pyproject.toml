@@ -16,3 +16,7 @@ robo-minerador = "robo_minerador.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+exclude = ["robo_minerador.typescript*"]
+
+[tool.setuptools.package-data]
+robo_minerador = ["typescript/*.mjs", "typescript/package.json", "typescript/package-lock.json"]

@@ -79,12 +79,13 @@ class WorkerPool:
     Um mapa abandonado deve ser fechado explicitamente ou pelo contexto do pool.
     """
 
-    def __init__(self, workers, client_factory):
-        """Cria o executor; clientes só são construídos quando uma operação os pede."""
+    def __init__(self, workers, client_factory, *, on_cancel=None):
+        """Cria o executor e um callback opcional de fechamento, chamado uma única vez."""
         if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
             raise ValueError("workers deve ser um inteiro positivo.")
         self.window_size = workers
         self._factory = client_factory
+        self._on_cancel = on_cancel
         self._executor = ThreadPoolExecutor(max_workers=workers)
         self._local = local()
         self._lock = Lock()
@@ -170,13 +171,22 @@ class WorkerPool:
                 self.__exit__(*sys.exc_info())
 
     def close(self):
-        """Cancela pendências, aguarda workers e fecha todos os clientes no coordenador."""
+        """Cancela recursos externos antes de aguardar workers e fecha todos os clientes.
+
+        O callback é executado uma única vez, mesmo no fechamento normal. Sua
+        falha não impede a limpeza; __exit__ preserva a exceção original ativa.
+        """
         with self._lock:
             if self._closed:
                 return
             self._closed = True
             clients = list(self._clients)
         errors = []
+        if self._on_cancel is not None:
+            try:
+                self._on_cancel()
+            except BaseException as error:
+                errors.append(error)
         for future in self._pending:
             future.cancel()
         for client in clients:
