@@ -3,6 +3,8 @@ import { pathToFileURL } from 'node:url';
 import { createProject, walk, declarationName, className } from './virtual-project.mjs';
 import { collectTests, identity } from './test-associations.mjs';
 import { documentationFor } from './documentation.mjs';
+import { contextImpact } from './context-impact.mjs';
+import { verifySnapshotInput, prepareSnapshotContext } from './snapshot-context.mjs';
 
 /** Constrói resultado de critério com justificativa metodológica em português. */
 function criterion(status, reason) { return { status, reason }; }
@@ -100,7 +102,11 @@ function compare(left, right) { return left < right ? -1 : left > right ? 1 : 0;
 
 /** Analisa fontes em memória e devolve evidências estáticas sem executar candidatos. */
 export function analyze(input) {
+  const snapshotMode = verifySnapshotInput(input);
   const project = createProject(input);
+  project.snapshotMode = snapshotMode;
+  project.analysisComplete = input.analysis_complete;
+  if (snapshotMode) prepareSnapshotContext(project, input);
   const tests = collectTests(project);
   const units = [];
   const invalidSources = new Set();
@@ -119,7 +125,10 @@ export function analyze(input) {
   }
   units.sort(/** Ordena unidades por caminho e posição lexical. */ (left, right) => compare(project.relative(left.getSourceFile().fileName), project.relative(right.getSourceFile().fileName)) || left.getStart() - right.getStart());
   for (const reference of project.unresolved) project.issues.push({ code: 'UNRESOLVED_LOCAL_IMPORT', message: 'Importação local ou alias não resolvido no snapshot.', path: reference.from });
-  if (tests.pendingPaths.size || tests.pendingTargets.size || tests.mockedPaths.size || tests.mockedTargets.size) project.issues.push({ code: 'UNCERTAIN_TEST_EXECUTION', message: 'Receptores, callbacks, APIs, modificadores ou mocks contêm análise pendente sobre a implementação original.' });
+  const uncertainPaths = new Set([...tests.pendingPaths, ...tests.mockedPaths]);
+  for (const target of [...tests.pendingTargets, ...tests.mockedTargets]) uncertainPaths.add(target.slice(0, target.lastIndexOf(':')));
+  for (const filePath of uncertainPaths) project.issues.push({ code: 'UNCERTAIN_TEST_EXECUTION', message: 'Receptores, callbacks, APIs, modificadores ou mocks contêm análise pendente sobre a implementação original.', path: filePath });
+  const impact = contextImpact(project);
   const contextPaths = [...project.files.keys()].sort(compare);
   const analysisIssues = [];
   const instances = units.map(/** Consolida critérios e preserva os textos originais de cada unidade. */ node => {
@@ -129,16 +138,19 @@ export function analyze(input) {
     const start = node.getStart(source);
     const end = node.getEnd();
     const documentation = documentationFor(node, project, units);
+    const requiredDocumentationUncertain = documentation.ambiguous && (!snapshotMode || !documentation.proven);
     if (documentation.ambiguous) analysisIssues.push({ code: 'AMBIGUOUS_DOCUMENTATION', message: 'Vínculo documental ambíguo ou documento vinculado indisponível.', path: filePath });
     const associatedTests = [];
+    const usableTestPaths = [];
     let hasUsableTest = false;
-    let uncertainTest = tests.pendingTargets.has(unitId) || tests.pendingPaths.size > 0;
+    let uncertainTest = tests.pendingTargets.has(unitId) || !snapshotMode && [...tests.pendingPaths].some(/** No legado, conserva o alcance reverso por arquivo. */ pending => impact.closure([pending]).has(filePath));
+    const identityReasons = snapshotMode ? tests.uncertainCalls.filter(/** Atribui incerteza somente a chamadas cujo candidato é a unidade selecionada. */ call => call.targetId === unitId).map(/** Preserva caminho, posição e expressão sem inferir execução. */ call => call.filePath + ':' + call.line + ' (' + call.expression + ')') : [];
     for (const record of tests.records) {
       if (record.targetId !== unitId) continue;
-      if (tests.mockedPaths.has(filePath) || tests.mockedTargets.has(unitId)) { uncertainTest = true; continue; }
+      if (record.mockedTarget || !project.snapshotMode && (tests.mockedPaths.has(filePath) || tests.mockedTargets.has(unitId))) { uncertainTest = true; continue; }
       const testSource = record.node.getSourceFile();
       const modifiers = record.registration.modifiers;
-      if (record.registration.skipped === false && !record.registration.uncertainModifiers && !record.registration.uncertainRegistration) hasUsableTest = true;
+      if (record.registration.skipped === false && !record.registration.uncertainModifiers && !record.registration.uncertainRegistration) { hasUsableTest = true; usableTestPaths.push(record.filePath); }
       else uncertainTest = true;
       associatedTests.push({
         path: record.filePath, framework: record.registration.framework, name: record.registration.name,
@@ -149,13 +161,19 @@ export function analyze(input) {
         association: { kind: 'direct_call', call_line: testSource.getLineAndCharacterOfPosition(record.call.getStart()).line + 1, expression: record.call.expression.getText(testSource), resolved_target: { path: filePath, start_line: source.getLineAndCharacterOfPosition(start).line + 1, name: declarationName(node) } },
       });
     }
-    const incomplete = project.issues.length > 0 || invalidSources.size > 0 || project.unresolved.length > 0;
+    const testRoots = snapshotMode && hasUsableTest ? usableTestPaths : associatedTests.map(/** Sem testemunha utilizável, conserva registros disponíveis para auditar identidade. */ test => test.path);
+    const roots = [filePath, ...documentation.documentation.map(/** Inclui cada documento usado como evidência. */ doc => doc.path), ...testRoots];
+    const incomplete = impact.incomplete(roots, uncertainPaths);
+    const contextReasons = snapshotMode ? impact.blockers(roots) : [];
+    if (snapshotMode && requiredDocumentationUncertain) contextReasons.push('AMBIGUOUS_DOCUMENTATION [' + filePath + ']: ' + documentation.ambiguityReasons.join('; '));
+    // Ausência exige busca no snapshot inteiro; presença positiva independe dessa completude.
+    const incompleteSearch = incomplete || project.issues.length > 0 || project.unresolved.length > 0 || snapshotMode && !input.analysis_complete;
     const criteria = {
       identifiable_implementation: invalidSources.has(filePath) ? criterion('not_evaluated', 'Sintaxe incompleta impede identificar integralmente a implementação.') : criterion('approved', 'Declaração concreta identificada pela árvore sintática TypeScript.'),
-      associated_documentation: documentation.documentation.length ? criterion('approved', 'Descrição original explicitamente associada à declaração.') : documentation.ambiguous || incomplete ? criterion('not_evaluated', 'Busca de documentação incompleta ou vínculo externo ambíguo.') : criterion('rejected', 'Nenhuma descrição associada encontrada na busca completa dos arquivos fornecidos.'),
-      direct_test_association: hasUsableTest ? criterion('approved', 'Chamada direta resolvida em teste com registro comprovado e sem indicação de ignorado; execução não avaliada.') : uncertainTest || incomplete ? criterion('not_evaluated', 'Evidência de teste ignorada, incerta ou limitada por resolução e mocks não permite aprovar a associação.') : criterion('rejected', 'Busca completa não encontrou chamada direta em callback de teste comprovado.'),
+      associated_documentation: documentation.documentation.length ? criterion('approved', 'Descrição original explicitamente associada à declaração.') : documentation.ambiguous || incompleteSearch ? criterion('not_evaluated', 'Busca de documentação incompleta ou vínculo externo ambíguo.') : criterion('rejected', 'Nenhuma descrição associada encontrada na busca completa dos arquivos fornecidos.'),
+      direct_test_association: hasUsableTest ? criterion('approved', 'Chamada direta resolvida em teste com registro comprovado e sem indicação de ignorado; execução não avaliada.') : uncertainTest || incompleteSearch ? criterion('not_evaluated', identityReasons.length ? 'IDENTIDADE_CHAMADA_INCERTA: ' + identityReasons.join('; ') + '. Tipo/receptor não comprova chamada ao original.' : 'Evidência de teste ignorada, incerta ou limitada por resolução e mocks não permite aprovar a associação.') : criterion('rejected', 'Busca completa não encontrou chamada direta em callback de teste comprovado.'),
       nontrivial_implementation: invalidSources.has(filePath) ? criterion('not_evaluated', 'Sintaxe incompleta impede comprovar a forma de implementação.') : implementationCriterion(node, project.programFor(filePath).getTypeChecker()),
-      preserved_local_context: incomplete || documentation.ambiguous ? criterion('not_evaluated', 'Contexto contém referências ou análises pendentes.') : criterion('approved', 'Arquivos locais fornecidos e dependências resolvidas preservados por caminho.'),
+      preserved_local_context: incomplete || requiredDocumentationUncertain ? criterion('not_evaluated', snapshotMode ? 'Evidência estática necessária pendente: ' + contextReasons.join('; ') : 'Contexto contém referências ou análises pendentes.') : criterion('approved', snapshotMode ? 'Snapshot versionado íntegro e evidências estáticas preservadas; requisitos de execução não avaliados.' : 'Arquivos locais fornecidos e dependências resolvidas preservados por caminho.'),
     };
     if (associatedTests.length && !hasUsableTest) analysisIssues.push({ code: 'UNUSABLE_TEST_EVIDENCE', message: 'Associações preservadas apenas em testes ignorados ou com registro incerto.', path: filePath });
     if (criteria.nontrivial_implementation.status === 'not_evaluated') analysisIssues.push({ code: 'UNPROVEN_IMPLEMENTATION', message: 'Forma de implementação não permite concluir o critério H-F06.', path: filePath });
@@ -170,7 +188,7 @@ export function analyze(input) {
       reasons: Object.values(criteria).filter(/** Mantém razões de rejeição e pendência para auditoria. */ value => value.status !== 'approved').map(/** Preserva justificativas originais em português. */ value => value.reason),
     };
   });
-  return { analyzer: { name: 'typescript_compiler_api', version: ts.version }, instances, local_dependencies: uniqueSorted(project.dependencies), unresolved_references: uniqueSorted(project.unresolved), issues: uniqueSorted([...project.issues, ...analysisIssues]) };
+  return { analyzer: { name: 'typescript_compiler_api', version: ts.version }, instances, local_dependencies: uniqueSorted(project.dependencies), unresolved_references: uniqueSorted(project.unresolved), issues: uniqueSorted([...project.issues, ...analysisIssues]), ...(snapshotMode ? { snapshot: input.snapshot, inventory: input.inventory, analysis_complete: input.analysis_complete, execution_requirements: uniqueSorted(project.executionRequirements) } : {}) };
 }
 
 /** Executa exclusivamente o protocolo JSON da invocação direta. */

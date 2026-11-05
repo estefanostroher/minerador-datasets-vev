@@ -3,8 +3,52 @@
 from collections import Counter
 from copy import deepcopy
 import json
+import re
 
 from .extraction_analyzer import VALIDATION
+
+CONTEXT_POLICY = "versioned_snapshot_static_evidence_v1"
+
+
+def validate_snapshot_repository(repository):
+    """Valida referência portátil V3 sem alegar verificação dos objetos locais."""
+    context = repository.get("context", {})
+    _require(isinstance(context, dict), "Contexto V3 inválido.")
+    reference = context.get("snapshot")
+    _require(repository.get("context_policy") == CONTEXT_POLICY, "Política V3 ausente.")
+    _require(type(context.get("analysis_complete")) is bool, "Completude de análise ausente.")
+    if reference is None:
+        _require(repository.get("extraction_status") == "failed"
+                 and repository.get("summary", {}).get("instance_count") == 0,
+                 "Snapshot V3 ausente.")
+        _require("snapshot" in context and repository.get("execution_requirements") == [],
+                 "Falha V3 sem referência explícita ou com requisitos não verificados.")
+        _require(context["analysis_complete"] is False, "Análise sem snapshot não pode ser completa.")
+        return
+    fields = {"format", "cache_key", "repository_id", "commit_sha", "tree_oid",
+              "manifest_sha256", "file_count", "total_blob_bytes", "status"}
+    _require(isinstance(reference, dict) and set(reference) == fields, "Referência V3 inválida.")
+    identity, sha = repository.get("repository_id"), repository.get("commit_sha")
+    _require(type(identity) is int and identity > 0 and isinstance(sha, str)
+             and re.fullmatch(r"[0-9a-f]{40}", sha) is not None, "Origem V3 inválida.")
+    _require(reference["repository_id"] == identity and type(reference["repository_id"]) is int
+             and reference["commit_sha"] == sha and reference["cache_key"] == f"{identity}/{sha}"
+             and reference["format"] == "git-bare-v1" and reference["status"] == "complete",
+             "Snapshot de outra origem.")
+    for field, length in (("tree_oid", 40), ("manifest_sha256", 64)):
+        _require(isinstance(reference[field], str)
+                 and re.fullmatch(r"[0-9a-f]{%d}" % length, reference[field]) is not None,
+                 "Hash V3 inválido.")
+    _require(all(type(reference[field]) is int and reference[field] >= 0
+                 for field in ("file_count", "total_blob_bytes")), "Tamanho V3 inválido.")
+    requirements = repository.get("execution_requirements")
+    _require(isinstance(requirements, list), "Requisitos V3 ausentes.")
+    for item in requirements:
+        _require(isinstance(item, dict) and set(item) == {"type", "path", "status"}
+                 and item["type"] in {"test_configuration", "environment", "external_dependency",
+                     "dynamic_loading", "external_resource", "gitlink", "lfs_pointer"}
+                 and isinstance(item["path"], str) and bool(item["path"])
+                 and item["status"] == "not_evaluated", "Requisito V3 inválido.")
 
 
 def _require(condition, message):
@@ -53,14 +97,21 @@ def _group_issues(issues):
 
 
 def expand_instance(instance: dict, repository: dict, reasons: dict[str, str]) -> dict:
-    """Expande instância v2 usando catálogo id→texto; preserva instâncias legadas."""
+    """Expande V1/V2/V3 para inspeção; não verifica cache nem promove legado."""
     _require(instance.get("record_type") == "instance" and repository.get("record_type") == "repository",
              "Tipos incompatíveis para expansão.")
-    _require(instance.get("schema_version", 1) in (1, 2)
-             and repository.get("schema_version", 1) in (1, 2), "Versão desconhecida.")
+    version = instance.get("schema_version", 1)
+    repository_version = repository.get("schema_version", 1)
+    _require(type(version) is int and version in (1, 2, 3)
+             and type(repository_version) is int and repository_version in (1, 2, 3)
+             and (version == 3) == (repository_version == 3), "Versão desconhecida ou misturada.")
+    if version == 3:
+        validate_snapshot_repository(repository)
     _require(instance.get("repository_id") == repository.get("repository_id")
              and "repository_id" in instance, "Repositório incompatível com a instância.")
     result = deepcopy(instance)
+    if version == 3:
+        result.pop("schema_version")
     for field in ("repository_url", "commit_sha", "extracted_at"):
         _require(field in repository, f"Origem ausente: {field}.")
         if field in result:
@@ -118,8 +169,9 @@ def _compact_instance(instance, repository, catalog, paths):
     return definitions, result
 
 
-def compact_records(records):
-    """Consome v1 preguiçosamente, publica v2 e fecha a origem mesmo em cancelamento."""
+def compact_records(records, *, schema_version=2):
+    """Consome adaptador V1, publica V2/V3 e fecha a origem em cancelamento."""
+    _require(type(schema_version) is int and schema_version in (2, 3), "Versão de publicação inválida.")
     source = iter(records)
     catalog, repository, lookup, pending, matched = {}, None, {}, {}, {}
     paths, instance_ids, occurrences = [], set(), Counter()
@@ -135,13 +187,14 @@ def compact_records(records):
             except Exception as error:
                 producer_error = error
                 break
-            _require(isinstance(raw, dict) and raw.get("schema_version", 1) == 1, "Registro não é v1.")
+            _require(isinstance(raw, dict) and type(raw.get("schema_version", 1)) is int
+                     and raw.get("schema_version", 1) == 1, "Registro não é v1.")
             kind, event = raw.get("record_type"), raw.get("event")
             _require(not finished, "Registro após encerramento.")
             if event == "run_started" and kind == "diagnostic":
                 _require(not started, "Início duplicado.")
                 started = True
-                yield {**raw, "schema_version": 2}
+                yield {**raw, "schema_version": schema_version}
                 continue
             _require(started, "Início da execução ausente.")
             if kind == "repository" or event == "run_finished":
@@ -158,6 +211,12 @@ def compact_records(records):
                 _require(repository is None or raw["repository_id"] != repository["repository_id"],
                          "Definição de repositório duplicada.")
                 repository = deepcopy(raw)
+                if schema_version == 3:
+                    validate_snapshot_repository(repository)
+                    repository["schema_version"] = 3
+                else:
+                    _require("context_policy" not in repository and "snapshot" not in repository["context"],
+                             "Snapshot V3 não pode ser publicado como legado.")
                 paths = _paths(repository)
                 instance_ids = set()
                 occurrences = Counter(json.dumps(issue, sort_keys=True, ensure_ascii=True, allow_nan=False)
@@ -172,7 +231,7 @@ def compact_records(records):
                 instance_ids.add(raw["instance_id"])
                 definitions, instance = _compact_instance(raw, repository, catalog, paths)
                 yield from definitions
-                yield instance
+                yield {**instance, "schema_version": 3} if schema_version == 3 else instance
             elif kind == "diagnostic" and event == "repository_error":
                 _require("issue_ref" not in raw and "affected_count" not in raw,
                          "Diagnóstico não é v1.")
@@ -204,7 +263,7 @@ def compact_records(records):
                     yield deepcopy(raw)
             elif kind == "diagnostic" and event == "run_finished":
                 finished = True
-                yield {**raw, "schema_version": 2, "error_count": error_count, "issue_count": issue_count}
+                yield {**raw, "schema_version": schema_version, "error_count": error_count, "issue_count": issue_count}
             else:
                 _require(kind == "diagnostic", "Tipo de registro desconhecido.")
                 yield deepcopy(raw)

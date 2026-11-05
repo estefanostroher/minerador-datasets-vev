@@ -1,5 +1,7 @@
 # Extração estática concorrente
 
+> **Evolução do contrato:** os limites de aquisição textual e a política conservadora de contexto descritos abaixo são históricos. Novas execuções seguem o [contrato v3 de snapshot reutilizável](2026-11-03-snapshot-reutilizavel-design.md), com [evidências finais](../plans/2026-11-04-extracao-v3-evidencias.md). Os contratos anteriores e suas medições permanecem preservados para leitura dos resultados legados.
+
 ## Decisões aprovadas
 
 Python coordena a recuperação de snapshots e um auxiliar Node.js com TypeScript Compiler API identifica funções declaradas e métodos de classe. A extração não instala dependências, compila nem executa código dos candidatos. A execução da suíte completa uma vez e a exigência de quatro casos válidos pertencem à validação.
@@ -46,6 +48,8 @@ Novas execuções seguem o [contrato enxuto v2](../plans/2026-11-02-extracao-sai
 O pesquisador interrompeu a coleta v1 e excluiu results/03_extracao.jsonl durante a implementação deste adendo. Não foi feita conversão ou nova coleta; a próxima execução produzirá v2 do início ao fim.
 
 ## Desenvolvimento e verificação
+
+O [adendo de contexto por instância](2026-11-03-contexto-por-instancia-design.md) substitui a propagação indiscriminada de problemas locais para todas as unidades. Preserva pendências de coleta, configuração e alcance desconhecido, sem alterar os estados ou o contrato v2. Somente instâncias `approved` serão encaminhadas à futura validação; as pendentes não provocam recuperação automática.
 
 Trabalhar no checkout atual, branch feature/minerator-pilot, sem branches, worktrees ou commits automáticos. Subagentes recebem escopo de arquivos; coordenador revisa aderência e qualidade. Código e identificadores em inglês; comentários/docstrings de todas as funções em português. Parar o trecho afetado diante de ambiguidade metodológica e perguntar ao pesquisador.
 

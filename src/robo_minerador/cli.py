@@ -14,6 +14,7 @@ from .github_api import create_client
 from .extraction import extract_repositories
 from .extraction_analyzer import preflight
 from .extraction_input import load_triage
+from .git_transport import GitTransport
 from .jsonl import write_jsonl
 from .triage import (
     _screen_candidate, diagnostic, failed_screen_records, load_discovery, screen_repositories,
@@ -69,6 +70,7 @@ def _run_extraction(args: argparse.Namespace) -> int:
         config.validate_workers(args.workers)
         candidates, source = load_triage(config.EXTRACTION_INPUT_PATH)
         settings = preflight()
+        GitTransport().preflight()
         if config.EXTRACTION_OUTPUT_PATH.exists() and not args.overwrite:
             print("A saída já existe. Use --overwrite para autorizar a substituição.")
             return 2

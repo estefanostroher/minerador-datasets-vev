@@ -6,6 +6,7 @@ import pytest
 
 from robo_minerador.extraction_analyzer import VALIDATION
 from robo_minerador.extraction_format import compact_records, expand_instance
+from robo_minerador.extraction_format import CONTEXT_POLICY
 from robo_minerador.jsonl import write_jsonl
 
 
@@ -334,3 +335,77 @@ def test_pending_diagnostics_do_not_delay_cancellation(interruption):
             assert caught.value is failure
     assert closed == [True]
     assert list(records) == []
+
+
+def snapshot_repository():
+    """Define metadados estruturais V3; integridade de bytes pertence aos testes Git."""
+    repo = repository(issues=[{"code": "LIMIT", "message": "limite", "path": "a.ts"}])
+    repo["context_policy"] = CONTEXT_POLICY
+    repo["execution_requirements"] = [{"type": "environment", "path": "a.ts", "status": "not_evaluated"}]
+    repo["context"].update(analysis_complete=True, snapshot={
+        "format": "git-bare-v1", "cache_key": "1/" + "a" * 40, "repository_id": 1,
+        "commit_sha": "a" * 40, "tree_oid": "b" * 40, "manifest_sha256": "c" * 64,
+        "file_count": 3, "total_blob_bytes": 100, "status": "complete"})
+    return repo
+
+
+def test_v3_roundtrip_preserves_origins_hashes_catalog_and_issue_counts():
+    """V3 conserva evidências e referências sem duplicar inventário nas unidades."""
+    repo = snapshot_repository()
+    unit = instance(repo)
+    raw = stream(repo, unit, diagnostic("repository_error", repository_id=1, **repo["issues"][0]))
+    before = deepcopy(raw)
+    rows = list(compact_records(raw, schema_version=3))
+    published = next(row for row in rows if row["record_type"] == "instance")
+    reasons = {row["reason_id"]: row["text"] for row in rows if row["record_type"] == "criterion_reason"}
+    assert expand_instance(published, rows[1], reasons) == unit
+    assert rows[0]["schema_version"] == rows[1]["schema_version"] == published["schema_version"] == rows[-1]["schema_version"] == 3
+    assert rows[1]["context"] == repo["context"]
+    assert rows[-1]["issue_count"] == rows[-1]["error_count"] == 1
+    assert "inventory" not in published and "snapshot" not in published
+    assert raw == before
+
+
+@pytest.mark.parametrize("tamper", ["sha", "id", "key", "hash", "missing", "extra", "policy", "status", "count", "requirement", "mixed"])
+def test_v3_structural_references_are_strict(tamper):
+    """Recusa vínculos incompatíveis antes de publicar ou expandir V3."""
+    repo = snapshot_repository()
+    reference = repo["context"]["snapshot"]
+    if tamper == "sha":
+        reference["commit_sha"] = "d" * 40
+    elif tamper == "id":
+        reference["repository_id"] = 2
+    elif tamper == "key":
+        reference["cache_key"] = "../outside"
+    elif tamper == "hash":
+        reference["manifest_sha256"] = "bad"
+    elif tamper == "missing":
+        del reference["tree_oid"]
+    elif tamper == "extra":
+        reference["storage_path"] = "C:/outside"
+    elif tamper == "policy":
+        repo["context_policy"] = "old"
+    elif tamper == "status":
+        reference["status"] = "partial"
+    elif tamper == "count":
+        reference["file_count"] = True
+    elif tamper == "requirement":
+        repo["execution_requirements"][0]["status"] = "approved"
+    else:
+        unit = instance(repo)
+        unit["schema_version"] = 2
+        repo["schema_version"] = 3
+        with pytest.raises(ValueError):
+            expand_instance(unit, repo, {})
+        return
+    with pytest.raises(ValueError):
+        list(compact_records(stream(repo, instance(repo)), schema_version=3))
+
+
+def test_v3_cannot_be_published_as_v2_and_legacy_does_not_gain_snapshot():
+    """Não converte legado em snapshot nem oculta política V3 numa saída V2."""
+    with pytest.raises(ValueError):
+        list(compact_records(stream(snapshot_repository())))
+    legacy = repository()
+    expanded = expand_instance(instance(legacy), legacy, {})
+    assert "snapshot" not in legacy["context"] and "snapshot" not in expanded

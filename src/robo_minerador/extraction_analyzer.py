@@ -9,6 +9,7 @@ from threading import Lock
 
 from .extraction_input import STATES, aggregate, strict_float, strict_object, valid_error_context
 from .triage import _invalid_constant
+from .extraction_snapshot import SnapshotInventory
 
 HELPER_DIRECTORY = Path(__file__).with_name("typescript")
 CRITERIA = ("identifiable_implementation", "associated_documentation", "direct_test_association",
@@ -101,9 +102,83 @@ def _snippet(value: dict, key: str, files: dict) -> list[tuple[int, int]]:
     return positions
 
 
-def validate_output(result, preserved: list[dict], analyzer: dict) -> dict:
-    """Valida estrutura, decisões, identidade, posições e vínculos ao contexto original."""
-    _fields(result, ("analyzer", "instances", "local_dependencies", "unresolved_references", "issues"))
+def _run_helper(payload: str) -> str:
+    """Repete o auxiliar confiável para validações avulsas do protocolo preservado."""
+    node = shutil.which("node")
+    _require(node is not None)
+    replay = subprocess.run(
+        [node, "--max-old-space-size=512", str(HELPER_DIRECTORY / "analyze.mjs")],
+        input=payload, capture_output=True, encoding="utf-8", errors="strict",
+        timeout=TIMEOUT_SECONDS, check=False,
+    )
+    _require(replay.returncode == 0)
+    return replay.stdout
+
+
+def _verify_context(result: dict, preserved: list[dict], runner) -> None:
+    """Recalcula estaticamente aprovações e grafo com o parser confiável, sem executar candidatos.
+
+    A lista publicada não constitui prova de completude: a repetição independente
+    detecta arestas removidas, referências apagadas e raízes adulteradas. Issues
+    produzidas pelo auxiliar são recalculadas; as demais conservam seu impacto.
+    """
+    approved = [unit for unit in result["instances"]
+                if unit["criteria"]["preserved_local_context"]["status"] == "approved"]
+    if not approved:
+        return
+    generated = {"INVALID_SOURCE", "UNRESOLVED_LOCAL_IMPORT", "UNRESOLVED_REFERENCE_PATH",
+                 "INVALID_MANIFEST", "INVALID_TSCONFIG", "UNSUPPORTED_TSCONFIG",
+                 "MULTIPLE_TSCONFIGS", "AMBIGUOUS_MODULE_RESOLUTION",
+                 "UNCERTAIN_TEST_EXECUTION", "AMBIGUOUS_DOCUMENTATION",
+                 "UNUSABLE_TEST_EVIDENCE", "UNPROVEN_IMPLEMENTATION"}
+    generated.update({"UNRESOLVED_AMBIENT_REFERENCE", "UNRESOLVED_CONFIG_TYPES",
+                      "UNPROVEN_RESOURCE_SCOPE", "UNRESOLVED_PROJECT_REFERENCE"})
+    payload = {"files": [{"path": item["path"], "content": item["content"]} for item in preserved],
+               "issues": [issue for issue in result["issues"] if issue["code"] not in generated]}
+    try:
+        expected = _json(runner(json.dumps(payload, ensure_ascii=False)))
+        _require(expected["local_dependencies"] == result["local_dependencies"])
+        _require(expected["unresolved_references"] == result["unresolved_references"])
+        _require(expected["issues"] == result["issues"])
+        _require([unit["function"] for unit in result["instances"]]
+                 == [unit["function"] for unit in expected["instances"]])
+        for unit, item in zip(result["instances"], expected["instances"]):
+            if unit["criteria"]["preserved_local_context"]["status"] != "approved":
+                continue
+            _require(item["criteria"]["preserved_local_context"]["status"] == "approved"
+                     and item["documentation"] == unit["documentation"]
+                     and item["tests"] == unit["tests"]
+                     and item["context_paths"] == unit["context_paths"])
+    except (OSError, UnicodeError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as error:
+        raise AnalyzerUnavailable("Não foi possível conferir o impacto estático do contexto.") from error
+
+
+def validate_output(result, preserved: list[dict], analyzer: dict, *, snapshot=None,
+                    inventory=None, analysis_complete=None, _runner=None) -> dict:
+    """Confere evidências e replay; V3 exige inventário de project_snapshot offline.
+
+    Loader V3 deve reabrir o store e reprojetar antes desta chamada, passando os
+    três campos keyword da projeção. Nunca inferir o modo pelos campos da saída.
+    """
+    snapshot_mode = snapshot is not None
+    if snapshot_mode:
+        _verified_inputs(preserved, inventory, snapshot, analysis_complete)
+    else:
+        _require(inventory is None and analysis_complete is None)
+    required = ("analyzer", "instances", "local_dependencies", "unresolved_references", "issues")
+    _fields(result, required + (("snapshot", "inventory", "analysis_complete", "execution_requirements") if snapshot_mode else ()))
+    if snapshot_mode:
+        _require(result['snapshot'] == snapshot and result['inventory'] == inventory
+                 and type(result['analysis_complete']) is bool
+                 and result['analysis_complete'] == analysis_complete)
+        _require(isinstance(result['execution_requirements'], list))
+        paths = {entry.get('path', entry.get('path_base64')) for entry in inventory}
+        for requirement in result['execution_requirements']:
+            _fields(requirement, ('type', 'path', 'status'))
+            _require(requirement['type'] in {'test_configuration', 'environment', 'external_dependency',
+                     'dynamic_loading', 'external_resource', 'gitlink', 'lfs_pointer'}
+                     and requirement['status'] == 'not_evaluated'
+                     and isinstance(requirement['path'], str) and requirement['path'] in paths)
     _require(result["analyzer"] == analyzer)
     files = {item["path"]: item["content"] for item in preserved}
     for key in ("instances", "local_dependencies", "unresolved_references", "issues"):
@@ -124,10 +199,12 @@ def validate_output(result, preserved: list[dict], analyzer: dict) -> dict:
             _string(dependency["specifier"])
             if key == "local_dependencies":
                 target = dependency["resolved_path"]
-                _require(target is None or isinstance(target, str) and target in files)
+                _require(target is None or isinstance(target, str)
+                         and (target in files or snapshot_mode and target in paths))
                 specifier = dependency["specifier"]
                 local = specifier.startswith((".", "/", "\\")) or bool(re.match(r"^[A-Za-z]:[\\/]", specifier))
-                _require(target is not None or not local)
+                _require(target is not None or not local or snapshot_mode
+                         and bool(re.search(r'(^|/)node_modules/', specifier.replace('\\', '/'))))
     seen = set()
     for unit in result["instances"]:
         _fields(unit, ("decision", "function", "documentation", "tests", "context_paths",
@@ -205,9 +282,41 @@ def validate_output(result, preserved: list[dict], analyzer: dict) -> dict:
             _require(bool(unit["documentation"]))
         if unit["criteria"]["direct_test_association"]["status"] == "approved":
             _require(any(test.get("skipped") is False for test in unit["tests"]))
-        if result["unresolved_references"]:
-            _require(unit["criteria"]["preserved_local_context"]["status"] != "approved")
+    if snapshot_mode:
+        # Replay único e não recursivo: inclusive critérios promovidos ou modo removido.
+        payload = _snapshot_payload(preserved, inventory._issues, snapshot, inventory, analysis_complete)
+        try:
+            expected = _json((_runner or _run_helper)(json.dumps(payload, ensure_ascii=False)))
+            _require(json.dumps(expected, sort_keys=True, ensure_ascii=True)
+                     == json.dumps(result, sort_keys=True, ensure_ascii=True))
+        except (OSError, UnicodeError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as error:
+            raise AnalyzerUnavailable('Não foi possível conferir as evidências estáticas do snapshot.') from error
+    else:
+        _verify_context(result, preserved, _runner or _run_helper)
     return result
+
+
+def _verified_inputs(files, inventory, snapshot, complete):
+    """Exige atestado Python e hashes dos bytes do reader, nunca declaração do auxiliar."""
+    try:
+        _require(isinstance(files, list) and isinstance(snapshot, dict))
+        _fields(snapshot, ('format', 'cache_key', 'repository_id', 'commit_sha', 'tree_oid',
+                           'manifest_sha256', 'file_count', 'total_blob_bytes', 'status'))
+        for item in files:
+            _fields(item, ('path', 'content', 'sha256'))
+            _string(item['path'])
+            _string(item['content'], empty=True)
+            _string(item['sha256'])
+        _require(isinstance(inventory, SnapshotInventory)
+                 and inventory.verifies(snapshot, files, complete))
+    except (KeyError, TypeError, UnicodeError, ValueError) as error:
+        raise AnalyzerUnavailable('Entradas não correspondem à projeção verificada do snapshot.') from error
+
+
+def _snapshot_payload(files, issues, snapshot, inventory, complete):
+    """Constrói a entrada V3 exata compartilhada entre análise e conferência."""
+    return {'files': files, 'issues': issues, 'snapshot': snapshot,
+            'inventory': inventory, 'analysis_complete': complete}
 
 
 class Analyzer:
@@ -228,10 +337,35 @@ class Analyzer:
                 if process.poll() is None:
                     process.kill()
 
-    def analyze(self, files: list[dict], issues: list[dict]) -> dict:
-        """Envia JSON em memória e valida saída; elimina filho em falha ou interrupção."""
-        payload = json.dumps({"files": [{"path": item["path"], "content": item["content"]}
-                                        for item in files], "issues": issues}, ensure_ascii=False)
+    def analyze(self, files: list[dict], issues: list[dict], *, snapshot=None,
+                inventory=None, analysis_complete=None) -> dict:
+        """Analisa legado ou V3 com campos de project_snapshot; não executa validação.
+
+        V3 retorna os campos antigos mais snapshot, inventory, analysis_complete e
+        execution_requirements. O inventário de saída é JSON, não novo atestado.
+        """
+        if snapshot is not None:
+            _verified_inputs(files, inventory, snapshot, analysis_complete)
+            _require(issues == inventory._issues)
+            data = _snapshot_payload(files, issues, snapshot, inventory, analysis_complete)
+        else:
+            _require(inventory is None and analysis_complete is None)
+            data = {"files": [{"path": item["path"], "content": item["content"]}
+                              for item in files], "issues": issues}
+        payload = json.dumps(data, ensure_ascii=False)
+        try:
+            result = validate_output(_json(self._invoke(payload)), files, self.settings["analyzer"],
+                                     snapshot=snapshot, inventory=inventory,
+                                     analysis_complete=analysis_complete, _runner=self._invoke)
+            _require(all(issue in result["issues"] for issue in issues))
+            return result
+        except (UnicodeError, ValueError) as error:
+            if isinstance(error, AnalyzerUnavailable):
+                raise
+            raise AnalyzerUnavailable("Auxiliar TypeScript emitiu saída inválida.") from error
+
+    def _invoke(self, payload: str) -> str:
+        """Executa uma análise ou conferência com o mesmo controle de cancelamento e heap."""
         process = None
         try:
             with self._lock:
@@ -246,12 +380,7 @@ class Analyzer:
             stdout, _ = process.communicate(payload, timeout=TIMEOUT_SECONDS)
             if process.returncode:
                 raise AnalyzerUnavailable("O auxiliar TypeScript não concluiu a análise.")
-            result = validate_output(_json(stdout), files, self.settings["analyzer"])
-            _require(all(issue in result["issues"] for issue in issues))
-            if issues:
-                _require(all(unit["criteria"]["preserved_local_context"]["status"] != "approved"
-                             for unit in result["instances"]))
-            return result
+            return stdout
         except (OSError, UnicodeError, ValueError, subprocess.TimeoutExpired) as error:
             if isinstance(error, AnalyzerUnavailable):
                 raise

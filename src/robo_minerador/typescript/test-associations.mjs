@@ -3,6 +3,7 @@ import path from 'node:path';
 import { walk } from './virtual-project.mjs';
 
 const frameworks = new Map([['vitest', 'vitest'], ['@jest/globals', 'jest'], ['node:test', 'node:test'], ['mocha', 'mocha']]);
+const registrationNames = new Set(['test', 'it', 'specify', 'describe', 'suite', 'context']);
 
 /** Confere identidade externa antes de confiar na grafia de um framework reconhecido. */
 function externalFramework(moduleSpecifier, checker) {
@@ -15,7 +16,7 @@ function externalFramework(moduleSpecifier, checker) {
 /** Segue reexportações de APIs mesmo sem declarações instaladas dos frameworks. */
 function exportedApi(moduleSpecifier, name, checker, seen = new Set()) {
   const framework = externalFramework(moduleSpecifier, checker);
-  if (framework) return { framework, name };
+  if (framework) return { framework, name, apiPath: moduleSpecifier.getSourceFile().fileName };
   const module = checker.getSymbolAtLocation(moduleSpecifier);
   const key = `${module?.declarations?.[0]?.getSourceFile().fileName}:${name}`;
   if (!module || seen.has(key)) return null;
@@ -64,6 +65,18 @@ function unwrap(expression) {
   return expression;
 }
 
+/** Reconhece objeto global não sombreado, inclusive aliases constantes, sem exigir tipos npm. */
+function globalReceiver(expression, checker, seen = new Set()) {
+  expression = unwrap(expression);
+  if (!expression || !ts.isIdentifier(expression)) return false;
+  const symbol = checker.getSymbolAtLocation(expression);
+  if (['globalThis', 'global', 'window'].includes(expression.text) && (!symbol || symbol.declarations?.every(/** Descarta vínculos locais que sombreiam o objeto global. */ declaration => declaration.getSourceFile().isDeclarationFile))) return true;
+  if (!symbol || seen.has(symbol)) return false;
+  seen.add(symbol);
+  for (const declaration of symbol.declarations ?? []) if (ts.isVariableDeclaration(declaration) && declaration.initializer && declaration.parent.flags & ts.NodeFlags.Const) return globalReceiver(declaration.initializer, checker, seen);
+  return false;
+}
+
 /** Identifica a importação efetiva de um identificador ou namespace. */
 function importedApi(expression, checker, seen = new Set()) {
   expression = unwrap(expression);
@@ -107,9 +120,10 @@ function importedApi(expression, checker, seen = new Set()) {
 }
 
 /** Procura o manifesto mais próximo para comprovar APIs globais. */
-function globalFramework(filePath, files) {
+function globalFramework(filePath, files, configured = new Map()) {
   let directory = path.posix.dirname(filePath);
   while (true) {
+    if (configured.has(directory)) return configured.get(directory);
     const manifest = files.get(directory === '.' ? 'package.json' : `${directory}/package.json`);
     if (manifest) {
       try {
@@ -153,7 +167,7 @@ function propertyName(node) {
 }
 
 /** Reconhece registros de testes e suítes, incluindo modificadores e tabelas each. */
-function testRegistration(call, checker, filePath, files) {
+function testRegistration(call, checker, filePath, files, configured) {
   let expression = call.expression;
   const modifiers = [];
   let parameterized = false;
@@ -178,8 +192,8 @@ function testRegistration(call, checker, filePath, files) {
   const globalSymbol = checker.getSymbolAtLocation(expression);
   const ambientGlobal = !globalSymbol || globalSymbol.declarations?.every(/** Aceita apenas declarações ambientes do global comprovado pelo manifesto. */ declaration => declaration.getSourceFile().isDeclarationFile);
   if (!api && ts.isIdentifier(expression) && ambientGlobal) {
-    const framework = globalFramework(filePath, files);
-    if (framework) api = { framework, name: expression.text };
+    const framework = globalFramework(filePath, files, configured);
+    if (framework) api = { framework, name: expression.text, global: true };
   }
   if (!api) return null;
   const isTest = ['test', 'it'].includes(api.name) || api.framework === 'mocha' && api.name === 'specify';
@@ -288,10 +302,11 @@ function receiverClass(expression, checker) {
 }
 
 /** Resolve chamadas de funções e métodos para declarações reais. */
-export function resolveCall(call, checker) {
+export function resolveCall(call, checker, preserveCandidate = false) {
   const expression = unwrap(call.expression);
   const type = checker.getTypeAtLocation(expression);
-  if (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.Union)) return { target: null, ambiguous: true };
+  const uncertainType = Boolean(type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.Union));
+  if (uncertainType && !preserveCandidate) return { target: null, ambiguous: true };
   const symbol = unalias(checker, checker.getSymbolAtLocation(ts.isPropertyAccessExpression(expression) ? expression.name : expression));
   let declarations = symbol?.declarations ?? [];
   const aliases = new Set();
@@ -306,7 +321,7 @@ export function resolveCall(call, checker) {
   if (!target) {
     const mutableAlias = declarations.some(/** Sinaliza referência local que pode ser alias mutável, sem atribuir execução. */ declaration => ts.isVariableDeclaration(declaration) && declaration.initializer && (ts.isIdentifier(declaration.initializer) || ts.isPropertyAccessExpression(declaration.initializer)));
     const abstractMember = declarations.some(/** Mantém despachos por interface ou membro abstrato como pendentes. */ declaration => ts.isMethodSignature(declaration) || ts.isPropertySignature(declaration) || ts.isMethodDeclaration(declaration));
-    return { target: null, ambiguous: mutableAlias || abstractMember };
+    return { target: null, ambiguous: uncertainType || mutableAlias || abstractMember };
   }
   if (ts.isMethodDeclaration(target)) {
     if (!ts.isPropertyAccessExpression(expression)) return { target: null, ambiguous: true };
@@ -314,7 +329,7 @@ export function resolveCall(call, checker) {
     const isStatic = target.modifiers?.some(/** Verifica modificador estático. */ modifier => modifier.kind === ts.SyntaxKind.StaticKeyword) ?? false;
     if (!receiver || (isStatic ? receiver.staticClass !== target.parent : receiver !== target.parent)) return { target, ambiguous: true };
   }
-  return { target, ambiguous: false };
+  return { target, ambiguous: uncertainType };
 }
 
 /** Limita pendências a referências locais, sem penalizar APIs npm externas comuns. */
@@ -339,24 +354,72 @@ export function collectTests(project) {
   const testPaths = new Set();
   const pendingTargets = new Set();
   const pendingPaths = new Set();
+  const uncertainCalls = [];
   const mockedPaths = new Set();
   const mockedTargets = new Set();
+  const effects = new Map();
   const sourcePaths = [...project.files.keys()].filter(/** Seleciona fontes analisáveis de testes. */ name => /\.[cm]?[jt]sx?$/.test(name));
   for (const filePath of sourcePaths) {
     const program = project.programFor(filePath);
     const source = program?.getSourceFile('/candidate/' + filePath);
+    const effectProgram = project.snapshotMode ? project.contextProgramFor(filePath) : program;
+    const effectSource = effectProgram?.getSourceFile('/candidate/' + filePath);
+    if (!effectSource) continue;
+    const context = project.snapshotMode ? project.contextFor(filePath) : null;
+    const configured = context?.globalFrameworks;
+    const localMockedPaths = project.snapshotMode ? new Set() : mockedPaths;
+    const localMockedTargets = project.snapshotMode ? new Set() : mockedTargets;
+    const overriddenGlobals = new Set(), overriddenFrameworks = new Set();
+    effects.set(filePath, { mockedPaths: localMockedPaths, mockedTargets: localMockedTargets, overriddenGlobals, overriddenFrameworks });
+    const effectChecker = effectProgram.getTypeChecker();
+    walk(effectSource, /** Coleta apenas efeitos de contexto; AST auxiliar nunca comprova chamadas científicas. */ node => {
+      const checker = effectChecker, source = effectSource;
+      if (ts.isBinaryExpression(node) && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) {
+        const left = node.left;
+        if (project.snapshotMode && ts.isPropertyAccessExpression(left) && ['globalThis', 'global', 'window'].includes(left.expression.getText(source)) && ['test', 'it', 'describe', 'suite', 'specify'].includes(left.name.text)) overriddenGlobals.add(left.name.text);
+        const symbol = unalias(checker, checker.getSymbolAtLocation(ts.isPropertyAccessExpression(left) ? left.name : left));
+        for (const declaration of symbol?.declarations ?? []) if (ts.isMethodDeclaration(declaration) || ts.isFunctionDeclaration(declaration)) localMockedTargets.add(identity(declaration, project));
+      }
+      if (!ts.isCallExpression(node)) return;
+      if (!ts.isPropertyAccessExpression(node.expression)) return;
+      const api = importedApi(node.expression.expression, checker);
+      const mockSymbol = checker.getSymbolAtLocation(node.expression.expression);
+      const globalMock = ts.isIdentifier(node.expression.expression) && ['jest', 'vi'].includes(node.expression.expression.text) && (!mockSymbol || mockSymbol.declarations?.every(/** Aceita declaração ambiente do objeto global comprovado. */ declaration => declaration.getSourceFile().isDeclarationFile)) && globalFramework(filePath, project.files, configured);
+      if (!(api && ['vi', 'jest'].includes(api.name)) && !globalMock) return;
+      if (project.snapshotMode && node.expression.name.text === 'stubGlobal' && node.arguments[0] && ts.isStringLiteralLike(node.arguments[0]) && registrationNames.has(node.arguments[0].text)) overriddenGlobals.add(node.arguments[0].text);
+      if (['mock', 'doMock', 'unstable_mockModule'].includes(node.expression.name.text)) {
+        const specifier = node.arguments[0];
+        if (specifier && ts.isStringLiteralLike(specifier)) {
+          if (project.snapshotMode && frameworks.has(specifier.text)) overriddenFrameworks.add(frameworks.get(specifier.text));
+          const dependencies = project.dependencies.filter(/** Recupera todas as identidades possíveis do módulo mockado. */ dependency => dependency.from === filePath && dependency.specifier === specifier.text && dependency.resolved_path);
+          if (dependencies.length) for (const dependency of dependencies) localMockedPaths.add(dependency.resolved_path);
+          else pendingPaths.add(filePath);
+        } else pendingPaths.add(filePath);
+      }
+      if (node.expression.name.text === 'spyOn') {
+        const [receiver, property] = node.arguments;
+        if (receiver && property && ts.isStringLiteralLike(property)) {
+          if (project.snapshotMode && registrationNames.has(property.text)) {
+            if (globalReceiver(receiver, checker)) overriddenGlobals.add(property.text);
+            const receiverApi = importedApi(receiver, checker);
+            if (receiverApi?.namespace) overriddenFrameworks.add(receiverApi.framework);
+          }
+          const member = checker.getPropertyOfType(checker.getTypeAtLocation(receiver), property.text);
+          for (const declaration of unalias(checker, member)?.declarations ?? []) {
+            // Propriedades de objetos locais não são unidades científicas nem APIs de registro.
+            if (project.snapshotMode && !(ts.isFunctionDeclaration(declaration) || ts.isMethodDeclaration(declaration) && (ts.isClassDeclaration(declaration.parent) || ts.isClassExpression(declaration.parent)))) continue;
+            localMockedTargets.add(identity(declaration, project));
+          }
+        } else pendingPaths.add(filePath);
+      }
+    });
     if (!source) continue;
     const checker = program.getTypeChecker();
     const registrations = [];
-    walk(source, /** Identifica registros e operações de mock antes das associações. */ node => {
+    walk(source, /** Comprova registros somente no programa original da fonte, preservando opções e identidades. */ node => {
       if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && externalFramework(node.moduleSpecifier, checker)) testPaths.add(filePath);
-      if (ts.isBinaryExpression(node) && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) {
-        const left = node.left;
-        const symbol = unalias(checker, checker.getSymbolAtLocation(ts.isPropertyAccessExpression(left) ? left.name : left));
-        for (const declaration of symbol?.declarations ?? []) if (ts.isMethodDeclaration(declaration) || ts.isFunctionDeclaration(declaration)) mockedTargets.add(identity(declaration, project));
-      }
       if (!ts.isCallExpression(node)) return;
-      const registration = testRegistration(node, checker, filePath, project.files);
+      const registration = testRegistration(node, checker, filePath, project.files, configured);
       if (registration) {
         testPaths.add(filePath);
         registrations.push({ node, registration });
@@ -364,33 +427,13 @@ export function collectTests(project) {
       }
       let rootApi = node.expression;
       while (ts.isPropertyAccessExpression(rootApi)) rootApi = rootApi.expression;
-      if (!registration && ts.isIdentifier(rootApi) && ['test', 'it', 'specify'].includes(rootApi.text) && !checker.getSymbolAtLocation(rootApi) && potentialGlobals(filePath, project.files) && !globalFramework(filePath, project.files)) {
+      if (!registration && ts.isIdentifier(rootApi) && ['test', 'it', 'specify'].includes(rootApi.text) && !checker.getSymbolAtLocation(rootApi) && potentialGlobals(filePath, project.files) && !globalFramework(filePath, project.files, configured)) {
         testPaths.add(filePath);
         pendingPaths.add(filePath);
       }
       if (ts.isPropertyAccessExpression(node.expression) && ['extend', 'skipIf', 'runIf', 'scoped'].includes(node.expression.name.text)) {
         const base = importedApi(node.expression.expression, checker);
         if (base && ['test', 'it'].includes(base.name)) { testPaths.add(filePath); pendingPaths.add(filePath); }
-      }
-      if (!ts.isPropertyAccessExpression(node.expression)) return;
-      const api = importedApi(node.expression.expression, checker);
-      const mockSymbol = checker.getSymbolAtLocation(node.expression.expression);
-      const globalMock = ts.isIdentifier(node.expression.expression) && ['jest', 'vi'].includes(node.expression.expression.text) && (!mockSymbol || mockSymbol.declarations?.every(/** Aceita declaração ambiente do objeto global comprovado. */ declaration => declaration.getSourceFile().isDeclarationFile)) && globalFramework(filePath, project.files);
-      if (!(api && ['vi', 'jest'].includes(api.name)) && !globalMock) return;
-      if (['mock', 'doMock', 'unstable_mockModule'].includes(node.expression.name.text)) {
-        const specifier = node.arguments[0];
-        if (specifier && ts.isStringLiteralLike(specifier)) {
-          const dependencies = project.dependencies.filter(/** Recupera todas as identidades possíveis do módulo mockado. */ dependency => dependency.from === filePath && dependency.specifier === specifier.text && dependency.resolved_path);
-          if (dependencies.length) for (const dependency of dependencies) mockedPaths.add(dependency.resolved_path);
-          else pendingPaths.add(filePath);
-        } else pendingPaths.add(filePath);
-      }
-      if (node.expression.name.text === 'spyOn') {
-        const [receiver, property] = node.arguments;
-        if (receiver && property && ts.isStringLiteralLike(property)) {
-          const member = checker.getPropertyOfType(checker.getTypeAtLocation(receiver), property.text);
-          for (const declaration of unalias(checker, member)?.declarations ?? []) mockedTargets.add(identity(declaration, project));
-        } else pendingPaths.add(filePath);
       }
     });
     const suites = new Map();
@@ -417,7 +460,10 @@ export function collectTests(project) {
           return;
         }
         if (ts.isCallExpression(body)) {
-          const resolved = resolveCall(body, checker);
+          const resolved = resolveCall(body, checker, Boolean(project.snapshotMode));
+          if (project.snapshotMode && (resolved.ambiguous || deferred)) uncertainCalls.push({ filePath,
+            line: source.getLineAndCharacterOfPosition(body.getStart()).line + 1,
+            expression: body.expression.getText(source), targetId: resolved.target ? identity(resolved.target, project) : null });
           if (resolved.target) {
             const targetId = identity(resolved.target, project);
             if (resolved.ambiguous || deferred) pendingTargets.add(targetId);
@@ -429,18 +475,40 @@ export function collectTests(project) {
       visit(registration.callback.body);
     }
   }
-  // Reexports de módulos mockados também impedem comprovar execução dos símbolos originais.
-  const queue = [...mockedPaths];
-  for (const filePath of queue) {
-    const source = project.programFor(filePath)?.getSourceFile('/candidate/' + filePath);
-    if (!source) continue;
-    for (const statement of source.statements) {
-      if (!ts.isExportDeclaration(statement) || !statement.moduleSpecifier) continue;
-      const dependencies = project.dependencies.filter(/** Recupera alvos locais possíveis da reexportação mockada. */ dependency => dependency.from === filePath && dependency.specifier === statement.moduleSpecifier.text && dependency.resolved_path);
-      for (const dependency of dependencies) if (!mockedPaths.has(dependency.resolved_path)) { mockedPaths.add(dependency.resolved_path); queue.push(dependency.resolved_path); }
+  /** Propaga substituições por reexportação sem misturar escopos de testes distintos. */
+  function expandMocks(paths) {
+    const queue = [...paths];
+    for (const filePath of queue) {
+      const source = (project.snapshotMode ? project.contextProgramFor(filePath) : project.programFor(filePath))?.getSourceFile('/candidate/' + filePath);
+      if (!source) continue;
+      for (const statement of source.statements) {
+        if (!ts.isExportDeclaration(statement) || !statement.moduleSpecifier) continue;
+        const dependencies = project.dependencies.filter(/** Recupera alvos da reexportação substituída. */ dependency => dependency.from === filePath && dependency.specifier === statement.moduleSpecifier.text && dependency.resolved_path);
+        for (const dependency of dependencies) if (!paths.has(dependency.resolved_path)) { paths.add(dependency.resolved_path); queue.push(dependency.resolved_path); }
+      }
     }
   }
-  return { records, testPaths, pendingTargets, pendingPaths, mockedPaths, mockedTargets };
+  if (project.snapshotMode) for (const record of records) {
+    const context = project.contextFor(record.filePath);
+    const paths = new Set(context.substitutedPaths), targets = new Set();
+    const frameworks = new Set(context.substitutedFrameworks), globals = new Set();
+    for (const source of context.sourcePaths) {
+      const effect = effects.get(source);
+      if (!effect) continue;
+      for (const value of effect.mockedPaths) paths.add(value);
+      for (const value of effect.mockedTargets) targets.add(value);
+      for (const value of effect.overriddenFrameworks) frameworks.add(value);
+      for (const value of effect.overriddenGlobals) globals.add(value);
+    }
+    expandMocks(paths);
+    if (frameworks.has(record.registration.framework) || record.registration.global && globals.size || record.registration.apiPath && paths.has(project.relative(record.registration.apiPath))) record.registration = { ...record.registration, uncertainRegistration: true };
+    record.mockedTarget = context.automockFrameworks.has(record.registration.framework) || paths.has(record.targetId.slice(0, record.targetId.lastIndexOf(':'))) || targets.has(record.targetId);
+    for (const value of paths) mockedPaths.add(value);
+    for (const value of targets) mockedTargets.add(value);
+  }
+  // Reexports de módulos mockados também impedem comprovar execução dos símbolos originais.
+  if (!project.snapshotMode) expandMocks(mockedPaths);
+  return { records, testPaths, pendingTargets, pendingPaths, mockedPaths, mockedTargets, uncertainCalls };
 }
 
 /** Forma identidade estável entre programas TypeScript de configurações distintas. */

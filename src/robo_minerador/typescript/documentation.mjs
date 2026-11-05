@@ -97,6 +97,7 @@ export function documentationFor(node, project, units) {
   const documentation = [];
   const name = declarationName(node);
   let ambiguous = false;
+  const ambiguityReasons = [];
   const checker = project.programFor(filePath).getTypeChecker();
   const symbol = node.name && checker.getSymbolAtLocation(node.name);
   const declarations = symbol?.declarations ?? [node];
@@ -116,12 +117,13 @@ export function documentationFor(node, project, units) {
         const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(filePath), target));
         const docPath = project.files.has(resolved) ? resolved : target;
         const content = project.files.get(docPath);
-        if (content === undefined) { ambiguous = true; continue; }
+        if (content === undefined) { ambiguous = true; ambiguityReasons.push('Documento vinculado ausente: ' + docPath); continue; }
         const linked = linkedSection(content, anchor, { docPath, node, project, units });
-        if (!linked) { ambiguous = true; continue; }
+        if (!linked) { ambiguous = true; ambiguityReasons.push('Seção documental ausente: ' + docPath + '#' + anchor); continue; }
         const { ambiguous: uncertain, ...section } = linked;
         ambiguous ||= uncertain;
-        if (descriptive(section.original_text, name)) documentation.push({ kind: 'external', path: docPath, ...section, association: { kind: 'source_link', source_path: filePath } });
+        if (uncertain) ambiguityReasons.push('Titularidade da seção documental incerta: ' + docPath + ':' + section.start_line);
+        if ((!project.snapshotMode || !uncertain) && descriptive(section.original_text, name)) documentation.push({ kind: 'external', path: docPath, ...section, association: { kind: 'source_link', source_path: filePath } });
       }
     }
   }
@@ -140,7 +142,7 @@ export function documentationFor(node, project, units) {
         if (resolved !== filePath && target !== filePath) continue;
         const matching = units.filter(/** Conta unidades que poderiam receber o vínculo. */ unit => project.relative(unit.getSourceFile().fileName) === filePath && anchorMatches(anchor, unit));
         if (anchor && !anchorMatches(anchor, node)) continue;
-        if (matching.length !== 1) { ambiguous = true; continue; }
+        if (matching.length !== 1) { ambiguous = true; ambiguityReasons.push('Vínculo com múltiplas declarações: ' + docPath + ':' + (index + 1)); continue; }
         associated = true;
       }
       const escaped = `${filePath}#${name}`;
@@ -148,15 +150,16 @@ export function documentationFor(node, project, units) {
       if (!associated && explicit && !links.length) {
         const matching = units.filter(/** Impede vincular métodos homônimos de classes distintas. */ unit => project.relative(unit.getSourceFile().fileName) === filePath && declarationName(unit) === name);
         if (matching.length === 1) associated = true;
-        else ambiguous = true;
+        else { ambiguous = true; ambiguityReasons.push('Símbolo documental homônimo: ' + docPath + ':' + (index + 1)); }
       }
-      if (!associated && exactReference(line, filePath) && !links.length) ambiguous = true;
+      if (!associated && exactReference(line, filePath) && !links.length) { ambiguous = true; ambiguityReasons.push('Menção de arquivo sem vínculo de símbolo: ' + docPath + ':' + (index + 1)); }
       if (associated) {
         const { ambiguous: uncertain, ...section } = sectionAt(lines, index, { docPath, node, project, units });
         ambiguous ||= uncertain;
-        if (descriptive(section.original_text.replace(/\[[^\]]*\]\([^)]*\)/g, '').replaceAll(escaped, ''), name)) documentation.push({ kind: 'external', path: docPath, ...section, association: { kind: 'explicit_reference', target: escaped } });
+        if (uncertain) ambiguityReasons.push('Titularidade da seção documental incerta: ' + docPath + ':' + section.start_line);
+        if ((!project.snapshotMode || !uncertain) && descriptive(section.original_text.replace(/\[[^\]]*\]\([^)]*\)/g, '').replaceAll(escaped, ''), name)) documentation.push({ kind: 'external', path: docPath, ...section, association: { kind: 'explicit_reference', target: escaped } });
       }
     }
   }
-  return { documentation, ambiguous };
+  return { documentation, ambiguous, proven: documentation.length > 0, ambiguityReasons };
 }
