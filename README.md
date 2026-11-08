@@ -6,6 +6,8 @@ Projeto de pesquisa para construir um dataset de funções e métodos TypeScript
 
 A **descoberta**, a **triagem estática** e a **extração estática concorrente** estão implementadas: pacote Python, CLI e uma saída JSONL por etapa. A descoberta encontra candidatos; a triagem inspeciona seus artefatos no SHA selecionado; a extração identifica funções/métodos, documentação original e chamadas diretas em testes. Aprovação na extração permite avançar para validação, mas ainda não representa uma instância final do dataset. Essas três etapas não instalam dependências dos candidatos nem executam suas suítes.
 
+A **validação dinâmica** está implementada com CLI, receitas, executor Docker, instrumento Vitest e publicação por instância. A execução real mais recente avaliou 190 candidatas de seis origens: **4 aprovadas, 3 rejeitadas e 183 pendentes**, com estado `partial`. A aprovação comprova pelo menos quatro casos positivos associados à implementação original; a auditoria de recursos é exclusivamente diagnóstica.
+
 - [Especificação aprovada — 2026-10-29](docs/superpowers/specs/2026-10-29-minerador-incremental-design.md)
 - [Plano da descoberta — 2026-10-29](docs/superpowers/plans/2026-10-29-descoberta.md)
 - [Plano da triagem — 2026-10-31](docs/superpowers/plans/2026-10-31-triagem.md)
@@ -15,6 +17,7 @@ A **descoberta**, a **triagem estática** e a **extração estática concorrente
 - [Saída enxuta da extração v2 — contrato e evidências](docs/superpowers/plans/2026-11-02-extracao-saida-v2.md)
 - [Contexto por instância — contrato](docs/superpowers/specs/2026-11-03-contexto-por-instancia-design.md) e [implementação e evidências](docs/superpowers/plans/2026-11-03-contexto-por-instancia.md)
 - [Extração v3 — contrato](docs/superpowers/specs/2026-11-03-snapshot-reutilizavel-design.md), [plano](docs/superpowers/plans/2026-11-03-snapshot-reutilizavel-extracao.md) e [evidências finais — 2026-11-04](docs/superpowers/plans/2026-11-04-extracao-v3-evidencias.md)
+- [Validação dinâmica — contrato](docs/superpowers/specs/2026-11-07-validacao-design.md) e [plano e registro de execução](docs/superpowers/plans/2026-11-07-validacao.md)
 
 A integração com a API real foi **verificada em uma coleta pequena**, com cinco candidatos e cinco SHAs resolvidos, incluindo a conferência de um SHA e da data de criação no GitHub. O arquivo real já existente do pesquisador foi inspecionado e preservado; a reprodução adicional ocorreu em memória, sem nova escrita pela CLI. As evidências estão no [plano da descoberta](docs/superpowers/plans/2026-10-29-descoberta.md).
 
@@ -302,6 +305,116 @@ O [relatório final v3](docs/superpowers/plans/2026-11-04-extracao-v3-evidencias
 
 A **rodada mais recente, após o fix P1 de contexto JS**, confirmou igualdade integral das 2.760 instâncias e cinco repositórios, exceto horário: cinco cache hits, zero misses/metadados/fetch/aquisições/sockets, pipeline de **400,231 s**, sem timeout. O loader `nextTip` passou novamente no mesmo store após fechamento normal. As 47 fontes JS desse corpus já tinham AST no programa original; a rodada comprova estabilidade, enquanto as regressões TS/JS cobrem o cenário adversarial `allowJs=false`. O coordenador informou **501 testes Python aprovados (685,99 s), 92 Node aprovados (1,561 s)** e `extract --help` com saída 0. As revisões de aderência e qualidade do fix JS estão **APPROVED**; o revisor de qualidade também executou os 92 testes Node independentemente. A revisão documental final está **APPROVED**, sem achados após resolver o único P2 de status. Entrega autorizada para commit pelo coordenador, sem push; o hash é consultável no histórico Git.
 
+## Validação dinâmica em Docker
+
+### Preparação e comando
+
+Python continua no host; **somente a validação usa Docker**. Havendo candidatas, requer Git, Node.js >=22 e o auxiliar confiável com TypeScript **6.0.3**, instalado pelo `npm ci --prefix ".\src\robo_minerador\typescript"` descrito acima. Essa instalação é do instrumento, separada dos manifestos/lockfiles candidatos. Em uma instalação por wheel, execute `npm ci --prefix` no diretório `robo_minerador/typescript` do pacote instalado. A wheel inclui receitas, auxiliares e lockfile confiável, sem `node_modules`, datasets ou cache.
+
+Prepare manualmente o Docker Desktop com mecanismo **Linux** (ou Docker Engine Linux acessível pela CLI). A aplicação não inicia o Desktop. Confira o daemon antes do piloto autorizado:
+
+```powershell
+docker version
+docker info --format '{{.OSType}} {{.Architecture}} {{.ServerVersion}} {{.CgroupVersion}}'
+.\.venv\Scripts\python.exe -m robo_minerador validate --help
+```
+
+A infraestrutura demonstrada em fixtures é **Linux/amd64, Docker Engine 29.6.1, cgroup v2**, com **4 CPUs, 8 GiB e zero swap adicional** por ambiente. O daemon deve ter capacidade para aplicar esses recursos. Instalação tem orçamento de **20 minutos**, preparação necessária **10 minutos**, e a soma dos comandos unitários **30 minutos**; os prazos não reiniciam por pacote/subprocesso. Receitas fixam os limites efetivos; as constantes `VALIDATION_*` em `config.py` também são validadas antes da escrita. Não há aumento automático após falha.
+
+O comando operacional é:
+
+```powershell
+.\.venv\Scripts\python.exe -m robo_minerador validate
+```
+
+**Não exige `GITHUB_TOKEN`**. Não herda credenciais/variáveis do Windows nos containers; transmite somente ambiente explícito da receita e do executor. A CLI inicial aceita apenas `--help` e `--overwrite`, sem workers, limite, seleção de funções ou caminhos personalizados. Entrada: `config.VALIDATION_INPUT_PATH` (`results/03_extracao.jsonl`); única saída canônica: `config.VALIDATION_OUTPUT_PATH` (`results/04_validacao.jsonl`).
+
+Saída existente é recusada com código **2**, antes do preflight caro. Para substituição intencional, use `validate --overwrite`. Toda a entrada v3, configuração e catálogo são validados antes da execução; havendo candidatas, Git, Node/TypeScript e Docker passam por preflight antes de abrir a saída. Erro global preserva os bytes anteriores mesmo com overwrite. Não há anexação, retomada ou repetição corretiva automática. Falha de escrita/cancelamento pode deixar um arquivo sem fechamento; a escrita não é atômica.
+
+Para preservar um 04 anterior antes de uma nova execução autorizada, execute o bloco abaixo na raiz do checkout. A cópia recebe timestamp e identificador único; falha no backup interrompe o bloco antes da validação. `validate` não aceita `--workers`: o paralelismo da extração não se aplica a esta etapa.
+
+```powershell
+& {
+    $previous = ".\results\04_validacao.jsonl"
+    if (Test-Path -LiteralPath $previous) {
+        $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+        $id = [guid]::NewGuid().ToString("N")
+        Copy-Item -LiteralPath $previous -Destination ".\results\04_validacao.$stamp.$id.backup.jsonl" -ErrorAction Stop
+    }
+    .\.venv\Scripts\python.exe -m robo_minerador validate --overwrite
+}
+```
+
+Zero candidatas gera `completed` sem Git, Node, Docker, imagens, instalação ou receitas aplicáveis de projetos ausentes. A entrada, a configuração de publicação, o formato global do catálogo e a proteção da saída continuam sendo conferidos. Origem `partial` é aceita e registrada, sem reprocessar suas instâncias pendentes nem copiar automaticamente esse estado para a validação. Os arquivos 01–03 e seus snapshots são preservados; o cache é lido offline, sem fetch corretivo.
+
+### Receitas e população atual
+
+O baseline inicial do 03 tinha **10 repositórios, 3.976 instâncias e estado `partial`**: 189 approved, 318 rejected e 3.469 not_evaluated. A tabela abaixo documenta suas 189 candidatas de seis origens; a execução mais recente recebeu 190 candidatas. Essas contagens são observações históricas, não regras fixas. As receitas em `src/robo_minerador/validation_recipes.json` vinculam ID/SHA, hashes de lockfiles, evidências originais e imagem imutável por digest:
+
+| Origem | Candidatas | Node / gerenciador / Vitest | Escopo e situação da receita |
+| --- | ---: | --- | --- |
+| YounghyeonPark/agbrte | 115 | 22.23.4 / npm 10.9.9 / 4.1.10 | `npm ci`, build original necessário, `npm test`; testes unitários completos da configuração original. |
+| Nemryz/opencode-sdd-integrity | 23 | 22.23.4 / npm 10.9.9 / 4.1.11 | `npm-shrinkwrap.json` efetivo; `npm test -- tools/test/unit`, categoria Unit integral documentada originalmente. |
+| mossglenn/armature | 17 | 22.23.4 / npm 10.9.9 / 5.0.3 | `UNIT_SCOPE_UNRESOLVED`: suíte mista com setup TerminusDB, sem separação unitária comprovada; nenhum comando candidato autorizado pela receita. |
+| HiAnur/anur-living-map | 23 | 24.22.2 / npm 11.19.1 / 5.0.5 | `npm ci`, `npm test`; inclui pacote aninhado descoberto pela configuração original. |
+| abinauv/dental-erp | 1 | Node/npm não resolvidos / Vitest 5.0.5 | `ENVIRONMENT_REQUIREMENTS_CONFLICT`: Node20 original incompatível com engines do lock; não trocar runtime para salvar candidatura. |
+| saching13/macrotracker-server | 10 | 26.13.0 / pnpm 10.34.7 / 5.0.5 | Receita v2: bootstrap pnpm confiável separado, integridade SHA-512; instalação frozen e `pnpm test:unit` recursivo de API/shared, sem build desnecessário. |
+
+### Uma passagem, evidências e limites reais
+
+Executa-se **uma passagem** de toda a suíte unitária original de **todos os pacotes**, preservando configuração, scripts, setups, paralelismo e escopo original. Integração/E2E originalmente separados ficam fora. A decisão aprovada de uma passagem prevalece sobre a referência histórica a três no rascunho do artigo. Não se altera fonte/teste para corrigir falhas nem se repete a suíte para cobertura.
+
+Um caso válido exige identidade do runner e prova verificável **declaração original → chamada direta → entrada na implementação original → resultado aprovado**. Duas chamadas, múltiplas assertions, iterações e retries não multiplicam casos. Parametrizações podem ser casos distintos mesmo com títulos iguais. Hooks, chamadas indiretas e mocks do alvo não recebem crédito presumido; falha inicial inesperada não é apagada por retry verde. O mínimo é **quatro casos válidos por função**; menos de quatro só reprova quando a contagem é completa. Lacunas permanecem pendentes.
+
+**Decisão por instância — comportamento do par função–testes:** ambiente reproduzível, escopo original, instalação e preparação necessária continuam pré-requisitos. Cada função exige passagem das declarações associadas e hooks pertinentes, entrada original e pelo menos quatro casos válidos. Quatro testemunhas verificadas podem ser limite inferior quando falta censo global exato. Falha de teste alheio, inclusive no mesmo arquivo, não é herdada. Falha associada ou de hook pertinente mantém o critério local; erro de finalização do instrumento não fabrica passagem. A aprovação afirma o comportamento dos testes observados da função, sem alegar propriedades gerais do programa ou ausência de serviços.
+
+Matriz demonstrada **em fixtures**, sem candidatos reais:
+
+| Node | Vitest | Vite |
+| --- | --- | --- |
+| 22.23.4 | 4.1.10 | 7.3.6 |
+| 22.23.4 | 4.1.11 | 8.3.0 |
+| 24.22.2 | 5.0.5 | 8.3.4 |
+| 26.13.0 | 5.0.5 | 8.3.5 |
+
+As fixtures comprovam transformação de chamadas/métodos com `this`, assincronia/concorrência, parametrização, hooks/mocks sem crédito, skips, retries e falha de setup; a ponte Python/Docker exercita comandos npm/pnpm, lifecycle e censo. O adaptador suporta o pool **`forks`** comprovado. Outros pools, runners personalizados, versões não demonstradas, sintaxe sem transformação segura e descendentes sem observabilidade suficiente permanecem pendentes, sem fallback por aproximação. Herdar preload, isoladamente, não comprova observação completa de descendentes. Suporte em fixture não comprova compatibilidade de toda configuração real.
+
+**Recursos são exclusivamente diagnósticos na política atual.** Estados approved/rejected/unknown da auditoria não aprovam, rejeitam nem deixam a instância pendente. `validate` não chama a auditoria automaticamente: helper Node ausente, erro ou timeout de análise de recursos não bloqueiam a publicação de testemunhas válidas. O ambiente, as receitas, a rede e o comando original continuam preservados. A mudança não autoriza ampliar serviços ou alterar escopo para conseguir candidatas.
+
+**Auditoria histórica/diagnóstico explícito:** `DockerExecutor.observe_resources` e os modelos em `validation_resources_local.py`, `validation-resource-closure.mjs`, `validation_resource_local_models.json` e `validation_resource_models.json` continuam disponíveis. As regras abaixo descrevem esse método anterior, obrigatório apenas nos formatos/políticas históricos; não são gates do comportamento função–testes atual. A análise não executa fontes. Node, Vitest e Vite exigem versões/bindings efetivos; bibliotecas candidatas não são liberadas por nome.
+
+A prova parte do alvo e de **todos os arquivos associados**, incluindo configuração original efetiva, hooks, setups, imports transitivos, manifests e configurações de resolução aplicáveis. O reporter preserva projeto/arquivo, isolamento, pool, configuração, setups e dependências do loader; as fontes são conferidas contra o manifesto original. `.npmrc` omitido pela projeção v3 é incorporado com conferência dos bytes; somente `legacy-peer-deps=true` é modelado. As fontes ficam uma vez em `resource_evidence.sources`; `resource_local_method` e `instance_resource_evidence` publicam modelos, hashes, fechamento, derivações e referências à observação. Não se repetem fontes inteiras por instância.
+
+O subconjunto compreende dados/expressões imutáveis, funções locais simples, APIs limitadas de registro/assertion/hooks/`each` do Vitest, `vi.fn`, filesystem em diretório novo criado por `mkdtempSync` sob `tmpdir`, SQLite `:memory:` sem SQL/extensões e criação de HTTP de simulação com handler analisado e porta efêmera no loopback explícito. A origem do recurso determina o modelo: porta local isolada não comprova simulação. A rejeição dinâmica modelada inicialmente cobre `node:http(s).get` para a API real `api.github.com`, com evento nativo ligado a API, URL, hash, arquivo e linha originais; carregar o módulo não comprova alcançar a chamada. Outros serviços continuam proibidos, mas só recebem rejeição com prova suficiente, inclusive a prova curada já prevista no catálogo.
+
+**Fronteira conservadora do método histórico:** sintaxe, operação, import, configuração, ambiente ou lifecycle desconhecidos **possivelmente relevantes** mantêm `no_external_services=not_evaluated`. O modelo local exige `forks`, `isolate=true` e ambiente Node efetivos, além de configuração literal compreendida. O reporter também observa a configuração raiz: raiz e projeto selecionado devem concordar nas fontes, setups e isolamento; uma raiz ausente ou diferente não é presumida independente. Plugins, aliases, projetos/configurações compostos, carregamento dinâmico, mutação, bibliotecas não modeladas, SQL e filesystem arbitrário permanecem desconhecidos nesse diagnóstico. Falta de texto ou cobertura de carregamento impede sua prova de recursos. Arquivos alheios são excluídos por fechamento estrutural de imports/configuração e isolamento comprovado. O método histórico analisa todos os corpos e efeitos compartilhados do módulo associado, sem fatiamento intrarquivo. Suíte verde e `--network none` não substituem essa prova. Essas lacunas pertencem ao diagnóstico de recursos e não bloqueiam a política função–testes atual.
+
+Na leitura histórica, `validate_output_records` rederiva os recursos modelados com o auxiliar **Node/TypeScript confiável do minerador** e textos incorporados. Na política atual, o leitor portátil rederiva provas locais, critérios e metadados **sem chamar o helper de recursos**, sem Docker, snapshots ou caminhos temporários. Auditorias incorporadas ficam como diagnóstico histórico não recertificado. O protocolo de testemunhas e as verificações de origem, transformações, chamadas, entrada original, retries e hooks permanecem obrigatórios. Fixtures não são candidatas do dataset.
+
+Instalação/preparação têm rede bridge, sem firewall por domínio; a suíte usa processo/container novo com `--network none` e loopback, sem serviços sobreviventes da preparação. Não se montam socket Docker, credenciais ou cache gravável. Workspace Linux preserva bytes/modos/links do snapshot; instrumento e ferramentas ficam separados. LFS/submódulos não materializados ficam pendentes. Outras arquiteturas e cgroup v1 não estão certificados pelas fixtures reais.
+
+### Resultado e interpretação
+
+Novas execuções do 04 usam UTF-8/JSONL compacto com escapes ASCII e **`schema_version=3`**, com política explícita `version=2`, `instance_execution_scope=function_original_tests_behavior` e `resource_gate_scope=diagnostic_only`. Os quatro critérios da instância são `execution_prerequisites`, `associated_tests_execution`, `original_target_execution` e `minimum_valid_cases`. O leitor valida a política exata na abertura e conserva a semântica histórica de v1 e de v2, incluindo `global_provisional` e `associated_closure_v1`; não migra nem reinterpreta arquivos anteriores e exige versão uniforme por arquivo.
+
+**Replay offline já executado:** as 190 instâncias do 04 preservado foram reavaliadas das evidências salvas, sem nova execução de Vitest: **4 approved, 3 rejected e 183 not_evaluated**, contra 0/3/187 antes. As quatro aprovações retêm 11/12/13/12 testemunhas originais como limites inferiores. O JSONL v3 separado foi publicado em TEMP e aceito pelo leitor portátil após reabertura. Backup, hashes, metodologia, relatório por instância e comandos estão em [function-test-behavior-report.md](docs/superpowers/function-test-behavior-report.md). O 04 original permanece intacto. A população histórica da tabela de receitas acima é um baseline anterior; este replay usa o 03 vinculado ao 04, com 190 elegíveis.
+
+**Execução real posterior ao replay:** o `results/04_validacao.jsonl` atual terminou em **2026-11-08T18:25:27.950251+00:00**, também com **4 approved, 3 rejected e 183 not_evaluated**, seis diagnósticos operacionais e estado `partial`. Uma aprovação pertence a `HiAnur/anur-living-map` e três a `saching13/macrotracker-server`. Os JSONL de resultados são artefatos locais ignorados pelo Git.
+
+Publicam-se `run_started`, um `repository` por origem elegível, suas `instance`, diagnósticos e `run_finished`. Permanecem hash/estado/contagens do 03, receita, ambiente, comandos, critérios, witnesses e limitações. Fontes técnicas necessárias ao replay ficam compartilhadas no repositório, não repetidas por função. Evidências e logs são incorporados antes da limpeza. O diagnóstico global não encerra a avaliação individual; somente instâncias com todos os critérios pertinentes aprovados avançam.
+
+Cobertura `associated_tests` é separada de `full_unit_suite`. A primeira requer atribuição por caso; a global não a substitui. Ausência de provedor/atribuição confiável é `null` com motivo, nunca zero; não se instala provedor nem se repete a execução para obtê-la. Cobertura opcional ausente não reprova.
+
+| Estado / condição | Código | Interpretação |
+| --- | ---: | --- |
+| `completed` | 0 | Sem pendências obrigatórias/erros operacionais; pode rejeitar todas as candidatas ou ter zero candidatas. |
+| `partial` | 1 | Avaliação científica útil com pendências/erros operacionais. |
+| `failed` | 1 | Nenhuma avaliação científica útil por impedimentos operacionais. |
+| Cancelamento / falha de escrita | 1 | Pode não haver fechamento; não aceitar como execução completa. |
+| Entrada/configuração/preflight inválidos ou saída existente sem autorização | 2 | Recusa antes de abrir/substituir a saída. |
+
+Exit code sozinho não comprova culpa do projeto: OOM, orçamento do minerador, registry/daemon/instrumento indisponíveis são operacionais. Falha candidata identificada rejeita o critério pertinente; falha associada ou de hook pertinente rejeita a instância. Serviços observados pertencem ao diagnóstico de recursos e não alteram a decisão na política atual. Uma execução operacionalmente parcial pode conter instâncias aprovadas com todos os gates locais demonstrados. Somente instâncias `approved` poderão seguir à futura deduplicação.
+
 ## Verificações locais
 
 ```powershell
@@ -312,15 +425,26 @@ A **rodada mais recente, após o fix P1 de contexto JS**, confirmou igualdade in
 .\.venv\Scripts\python.exe -m robo_minerador discover --help
 .\.venv\Scripts\python.exe -m robo_minerador triage --help
 .\.venv\Scripts\python.exe -m robo_minerador extract --help
+.\.venv\Scripts\python.exe -m robo_minerador validate --help
 npm test --prefix ".\src\robo_minerador\typescript"
 git diff --check
 ```
+
+Para incluir as integrações Docker controladas no gate (não executa projetos minerados), com daemon Linux preparado:
+
+```powershell
+$env:ROBO_TEST_DOCKER = '1'
+.\.venv\Scripts\python.exe -m pytest -q
+npm test --prefix ".\src\robo_minerador\typescript"
+```
+
+Sem opt-in, as integrações Docker são puladas; skips não demonstram integração aprovada. O gate Python completo exige timeout do harness de pelo menos 1.200.000 ms.
 
 `tests/test_discovery.py` contém **16 casos**, contando as parametrizações, aprovados também na execução final do coordenador. As regressões necessárias cobrem: limite 5 atendido na primeira página mesmo com contagem alta; limite 1000 atendido nas dez páginas sem dividir; limite 1001 com fallback somente após essas páginas; e parâmetros reais `sort=updated` / `order=desc` enviados pelo cliente. Permanecem as verificações de integridade: IDs únicos, fronteiras das partições, consultas de origem e SHA inicial preservados; incompletude na primeira página ou em página posterior, inclusive com limite atingido; saturação indivisível; falhas de SHA e de busca com dados preservados; e propagação de erros de programação. As operações de rede são simuladas. A integração real foi verificada separadamente pela coleta pequena acima.
 
 ## Etapas seguintes
 
-Descoberta, triagem e extração estão implementadas; validação, deduplicação e construção ainda serão desenvolvidas. Cada etapa tem uma única saída JSONL:
+Descoberta, triagem, extração e validação por instância estão implementadas. A validação foi exercitada em fixtures e na execução real descrita acima. Deduplicação e construção serão desenvolvidas depois. Cada etapa tem uma única saída JSONL:
 
 | Etapa | Responsabilidade | Arquivo |
 | --- | --- | --- |
@@ -331,9 +455,9 @@ Descoberta, triagem e extração estão implementadas; validação, deduplicaç�
 | Deduplicação | Remover duplicações exatas e preservar suas origens. | `results/05_deduplicacao.jsonl` |
 | Construção | Consolidar instâncias finais, métricas e amostra para inspeção manual. | `results/06_dataset.jsonl` |
 
-A extração associa testes às funções por chamadas diretas e preserva seu contexto; ela não comprova que esses testes passam. A futura validação receberá somente instâncias aprovadas, instalará dependências, compilará quando necessário e executará a suíte completa **uma vez**, contando os casos parametrizados efetivamente executados. Cada função deverá ter pelo menos quatro casos válidos diretamente associados. A primeira falha de instalação, compilação ou execução excluirá o repositório, sem ajustes corretivos.
+A extração associa testes às funções por chamadas diretas e preserva seu contexto; ela não comprova que esses testes passam. A validação recebe somente instâncias aprovadas, instala dependências, prepara o necessário e executa a suíte unitária completa **uma vez**, contando os casos parametrizados efetivamente executados. Cada função precisa de pelo menos quatro casos válidos diretamente associados. Falha candidata identificada rejeita o critério pertinente sem ajustes corretivos; falhas alheias não são herdadas pela função e impedimento operacional permanece pendente.
 
-Os arquivos intermediários são ligados por `repository_id` e `repository_url`; a partir da extração, `instance_id` distingue funções do mesmo projeto. Somente a construção final consolidará todos os atributos. A extração usa TypeScript Compiler API; os detalhes de execução da validação e das etapas posteriores ainda dependem de planejamento, incluindo a confirmação em execução das associações estáticas e a contagem de casos.
+Os arquivos intermediários são ligados por `repository_id` e `repository_url`; a partir da extração, `instance_id` distingue funções do mesmo projeto. Somente a construção final consolidará todos os atributos. A extração usa TypeScript Compiler API; o 04 acrescenta evidências dinâmicas conforme o contrato próprio. As etapas posteriores ainda dependem de planejamento.
 
 ### Desenvolvimento e revisão
 

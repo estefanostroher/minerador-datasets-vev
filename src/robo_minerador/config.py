@@ -12,6 +12,13 @@ TRIAGE_INPUT_PATH = OUTPUT_PATH
 TRIAGE_OUTPUT_PATH = Path("results/02_triagem.jsonl")
 EXTRACTION_INPUT_PATH = TRIAGE_OUTPUT_PATH
 EXTRACTION_OUTPUT_PATH = Path("results/03_extracao.jsonl")
+VALIDATION_INPUT_PATH = EXTRACTION_OUTPUT_PATH
+VALIDATION_OUTPUT_PATH = Path("results/04_validacao.jsonl")
+VALIDATION_CPUS = 4
+VALIDATION_MEMORY_BYTES = 8 * 1024**3
+VALIDATION_INSTALLATION_SECONDS = 1200
+VALIDATION_PREPARATION_SECONDS = 600
+VALIDATION_UNIT_SUITE_SECONDS = 1800
 SNAPSHOT_CACHE_PATH = Path(".cache/robo-minerador/snapshots")
 SNAPSHOT_MAX_ENTRIES = 100_000
 SNAPSHOT_MAX_BLOB_BYTES = 512 * 1024 * 1024
@@ -19,6 +26,15 @@ SNAPSHOT_MAX_DISK_BYTES = 1024 * 1024 * 1024
 SNAPSHOT_TIMEOUT_SECONDS = 300
 SNAPSHOT_MAX_CONCURRENT = 2
 EXTRACTION_MAX_TEXT_BYTES = 32 * 1024 * 1024
+
+
+def validate_validation_limits(limits):
+    """Confere todos os orçamentos efetivos sem conversão ou aceitação de bool."""
+    keys = {"cpus", "memory_bytes", "installation_seconds", "preparation_seconds", "unit_suite_seconds"}
+    if not isinstance(limits, dict) or set(limits) != keys or any(
+            type(value) is not int or value <= 0 for value in limits.values()):
+        raise ValueError("Os limites da validação devem ser inteiros positivos completos.")
+    return dict(limits)
 
 
 def validate_workers(workers: int) -> int:

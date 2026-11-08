@@ -1,0 +1,44 @@
+{
+  "name": "closed_unit_effects",
+  "version": 2,
+  "typescript": "6.0.3",
+  "real_service_hosts": ["api.github.com"],
+  "inert_file_names": ["LICENSE", "LICENCE", "COPYING", "NOTICE", "README"],
+  "inert_suffixes": [".md", ".markdown", ".txt", ".rst", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp", ".svg", ".pdf", ".csv", ".css", ".scss", ".html", ".xml"],
+  "node_images": {
+    "22.23.4": "node@sha256:539d4d5b9c0df96bb9d1229264d358dc816e8592cb8867828a580b527e7ad0fa",
+    "24.22.2": "node@sha256:6b9d4ea31e614e29f364bf75758458731eb1e105b80c99667438dd6b3fe262e0",
+    "26.13.0": "node@sha256:1d9e3c29bf8eae6becc330e2546d461b23c1a86ac9207d015b5ea8ba26cbe210"
+  },
+  "vitest_trees": {
+    "4.1.10": "d3fd24af92fabda62731814693ab1fa47a77c91b1b48a7be343c45bf5213780e",
+    "4.1.11": "858562372f06b779c816daa2ea4b730cc90b400772ddf45e37dca9af6329bf5b",
+    "5.0.5": "44d505fc9fece64402e8528bfdfc22bd961fe822eeeb0358eda4b24aace50174"
+  },
+  "implementation_origin": "https://registry.npmjs.org/vitest/-/vitest-<version>.tgz; SHA-256 do JSON canônico da lista ordenada path/sha256 de todos os arquivos regulares package/; sem executar o pacote.",
+  "apis": {
+    "vitest": ["test", "it", "describe", "beforeAll", "afterAll", "beforeEach", "afterEach", "expect", "vi"],
+    "vitest/config": ["defineConfig"],
+    "node:os": ["tmpdir"],
+    "node:path": ["join"],
+    "node:fs": ["mkdtempSync", "writeFileSync", "readFileSync", "rmSync"],
+    "node:fs/promises": ["mkdtemp", "writeFile", "readFile", "rm"],
+    "node:assert/strict": ["ok", "equal", "notEqual", "strictEqual", "notStrictEqual", "deepEqual", "notDeepEqual", "deepStrictEqual", "notDeepStrictEqual", "match", "doesNotMatch"],
+    "node:sqlite": ["DatabaseSync"],
+    "node:http": ["createServer", "get"],
+    "node:https": ["get"]
+  },
+  "rules": {
+    "immutable_data": "Literais e expressões fechadas, bindings const, shorthand de dados e funções locais sem mutação; todo corpo é analisado, inclusive diferidos. Tipos/interfaces/import type/export type são apagados; imports mistos mantêm efeitos do módulo. Reexports estáticos fecham transitivos e recusam colisões. Regexp literal só tem capacidade nominal para assert.match/doesNotMatch, sem métodos arbitrários.",
+    "closed_graph_inert": "Documentos/assets de nomes/extensões enumerados só são inertes quando não importados nem carregados. O restante do grafo deve fechar na linguagem sem loaders dinâmicos, plugins ou leituras de arquivos originais. Arquivo executável/fora dessa lista não recebe exclusão automática.",
+    "vitest": "Registro inline, hooks, each com dados puros, assertions nativas limitadas e vi.fn com callback analisado; substituição de módulos, spies, extensões e globais não modelados.",
+    "temporary_files": "mkdtempSync ou await fs/promises.mkdtemp sob tmpdir; readFile/writeFile/rm síncronos ou assíncronos somente em descendentes construídos por join com segmentos literais sem separadores; sem links ou paths arbitrários. Leituras de código/configuração original ou caminhos opacos permanecem pendentes, não são classificados como serviço real.",
+    "node_assert": "node:assert/strict nominal, default namespace ou bindings nomeados/realiased; ok/equal/notEqual/strictEqual/notStrictEqual/deepEqual/notDeepEqual/deepStrictEqual/notDeepStrictEqual só recebem dados sem capacidades; match/doesNotMatch exigem string conhecida e regexp literal. Callbacks, extensões e operações opacas ficam pendentes.",
+    "snapshot_json": "readFileSync ou await fs/promises.readFile com encoding utf8, sobre new URL de caminho relativo JSON literal baseado em import.meta.url. O fechamento inclui o destino original, exige bytes/modo vinculados ao snapshot e JSON válido. JSON.parse sem reviver só lê string conhecida; escrita, leitura de código, caminhos absolutos/opacos e carregamento dinâmico continuam desconhecidos.",
+    "resolution": "Resolução relativa compartilhada sobre inventário original; loader Vitest vinculado habilita remapping js->ts/tsx, jsx->tsx, mjs->mts, cjs->cts. A prova local exige também Vite vinculado e cobertura do destino por hash original. Não escolhe entre múltiplos arquivos, não aceita declaração d.ts como implementação, escapes, percent-encoding, queries ou backslashes. Imports não relativos, aliases usados e exports/imports condicionais usados sem modelo permanecem pendentes; campos de resolução não utilizados não são efeitos executáveis.",
+    "embedded_database": "DatabaseSync(':memory:') sem opções; somente close modelado. SQL e extensões não modelados.",
+    "simulation_server": "createServer com handler analisado; response.end/writeHead; listen em porta 0 no loopback explícito e close. Não classifica servidor por porta isolada.",
+    "real_service": "node:http(s).get com URL HTTP(S) literal de real_service_hosts; chamada incondicional no módulo original e evento native_get com API, URL, hash, arquivo e linha correspondentes. Carregamento isolado, outros endpoints, callbacks e substituições opacas permanecem pendentes.",
+    "configuration": "Objeto declarativo test, include/exclude/setupFiles/globalSetup/environment=node; plugins, aliases, environments externos e outras opções não modeladas. Scripts unitários só vitest run ou delegação pnpm -r; lifecycle presente fica pendente. .npmrc somente legacy-peer-deps=true, sem outras diretivas."
+  }
+}

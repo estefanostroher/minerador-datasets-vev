@@ -1,0 +1,214 @@
+{
+  "schema_version": 1,
+  "recipes": [
+    {
+      "repository_id": 1317120711,
+      "repository_url": "https://github.com/YounghyeonPark/agbrte",
+      "commit_sha": "0c5c31099ce74cf87b6b4dc34a38e6a1f6ecfe58",
+      "recipe_version": 1,
+      "image": "node@sha256:539d4d5b9c0df96bb9d1229264d358dc816e8592cb8867828a580b527e7ad0fa",
+      "platform": "linux/amd64",
+      "tools": {"node": "22.23.4", "npm": "10.9.9", "vitest": "4.1.10"},
+      "lockfiles": [{"path": "package-lock.json", "sha256": "a695d0eeab12eb261c986ceeb9e17606c680dc2b50f63ef209b7b5de0223884b", "manager": "npm"}],
+      "environment": {},
+      "phases": {
+        "installation": [{"argv": ["npm", "ci"], "cwd": "."}],
+        "preparation": [{"argv": ["npm", "run", "build"], "cwd": "."}],
+        "unit_suite": [{"argv": ["npm", "test"], "cwd": "."}]
+      },
+      "unit_scope": {
+        "status": "approved", "code": null,
+        "packages": [{"path": ".", "name": "agbrte", "scope": "vitest.config.ts: tests/**/*.test.ts; tests/e2e/*.spec.ts pertence ao Playwright separado. Único pacote."}],
+        "evidence": ["package.json", "vitest.config.ts", ".github/workflows/ci.yml"],
+        "external_services": {"status": "not_evaluated", "message": "Processos, sockets e Git temporários são criados pelos testes; não constituem por si serviço proibido. A ausência de serviços reais em toda a suíte ainda requer observação; whisperReal mantém skip original se não houver binário/modelo/áudio explícitos.", "evidence": ["tests/support/setup.ts", "tests/worktree.test.ts", "tests/whisperReal.test.ts"]}
+      },
+      "limits": {"cpus": 4, "memory_bytes": 8589934592, "installation_seconds": 1200, "preparation_seconds": 600, "unit_suite_seconds": 1800},
+      "resolution_status": "resolved",
+      "resolution": {"code": null, "message": "Manifesto oficial node:22-bookworm linux/amd64 resolvido em 2026-11-07; pull pelo digest e inspeção em container confiável sem workspace/rede: Node v22.23.4, npm 10.9.9, Git 2.39.5, Python 3.11.2. Não comprova limites Docker, compatibilidade do instrumento nem execução candidata.", "evidence": ["package.json", ".github/workflows/ci.yml"]},
+      "evidence": [
+        {"path": "package.json", "detail": "engines.node >=22; test='vitest run'; build='node scripts/build.mjs && vite build'. Sem workspaces e sem lifecycle de raiz omitido. npm ci preserva scripts de dependências (incluindo Electron/esbuild)."},
+        {"path": "package-lock.json", "detail": "Lock efetivo único da raiz, lockfileVersion=3; packages['node_modules/vitest'].version=4.1.10. SHA-256 calculado dos bytes do blob Git, sem conversão de EOL."},
+        {"path": "vitest.config.ts", "detail": "include=['tests/**/*.test.ts']; environment=node; setupFiles tests/support/setup.ts; testTimeout e hookTimeout 20000. Paralelismo original preservado."},
+        {"path": ".github/workflows/ci.yml", "detail": "Node 22; npm ci; Build npm run build ANTES de Unit tests npm test: testes bifurcam hosts/CLI dist. Typecheck/lints/checks de catálogo não são pré-requisitos da suíte e não integram a receita."},
+        {"path": "scripts/build.mjs", "detail": "Build esbuild produz dist/main/agbrteHost.js, agentHost.js e dist/cli/agbrte.js usados pelos testes; banner de versão e aliases originais preservados."},
+        {"path": "tests/support/setup.ts", "detail": "AGBRTE_HOST_LINGER_MS default 2000 e AGBRTE_HOME temporário por arquivo; hooks originais limpam o diretório. Nenhuma variável do host é transmitida pela receita."},
+        {"path": "tests/worktree.test.ts", "detail": "Usa Git real contra repositórios temporários com identidade local de fixture; imagem oficial inspecionada contém Git 2.39.5. Não requer serviço remoto."},
+        {"path": "tests/whisperReal.test.ts", "detail": "describe.skipIf(!HAVE), HAVE exige AGBRTE_WHISPER_BIN/MODEL/SPEECH e existsSync; receita não fornece nem instala esses recursos."}
+      ]
+    },
+    {
+      "repository_id": 1281991062,
+      "repository_url": "https://github.com/Nemryz/opencode-sdd-integrity",
+      "commit_sha": "c3d26596edf63adc444b1900790bbccd49795226",
+      "recipe_version": 1,
+      "image": "node@sha256:539d4d5b9c0df96bb9d1229264d358dc816e8592cb8867828a580b527e7ad0fa",
+      "platform": "linux/amd64",
+      "tools": {"node": "22.23.4", "npm": "10.9.9", "vitest": "4.1.11"},
+      "lockfiles": [{"path": "npm-shrinkwrap.json", "sha256": "ac06a26bdeefabb7996883053bf6592c7559360b781bd39e9b4f4693b134c529", "manager": "npm"}],
+      "environment": {},
+      "phases": {"installation": [{"argv": ["npm", "ci"], "cwd": "."}], "preparation": [], "unit_suite": [{"argv": ["npm", "test", "--", "tools/test/unit"], "cwd": "."}]},
+      "unit_scope": {
+        "status": "approved", "code": null,
+        "packages": [{"path": ".", "name": "opencode-sdd-integrity", "scope": "Único pacote; docs/testing.md identifica tools/test/unit como categoria Unit para funções puras. A passagem encaminha esse diretório inteiro ao script original npm test, preservando a configuração; não seleciona nomes, funções ou arquivos candidatos. Categorias integration/property/chaos/concurrency/fuzz/snapshot/install/smoke/mcp são separadas na tabela original."}],
+        "evidence": ["package.json", "vitest.config.ts", "docs/testing.md"],
+        "external_services": {"status": "not_evaluated", "message": "A passagem unitária usa a categoria original de funções puras; smoke/runtime/MCP pertencem a categorias separadas excluídas. Confirmar os recursos efetivamente usados pela unidade exige observação, sem inferir serviços da suíte ampla.", "evidence": ["docs/testing.md"]}
+      },
+      "limits": {"cpus": 4, "memory_bytes": 8589934592, "installation_seconds": 1200, "preparation_seconds": 600, "unit_suite_seconds": 1800},
+      "resolution_status": "resolved",
+      "resolution": {"code": null, "message": "Node/npm da imagem oficial linux/amd64 inspecionados (22.23.4/10.9.9). Composição da receita: script original npm test com argumento de diretório definido como Unit pela documentação original, mantendo toda essa categoria e configuração; não se apresenta npm test amplo como unitário nem se inventa script test:unit.", "evidence": ["docs/testing.md", "vitest.config.ts", ".github/workflows/test.yml"]},
+      "evidence": [
+        {"path": "package.json", "detail": "engines.node >=22; test='vitest run'; sem workspaces ou scripts de preparação necessários ao test declarados na raiz. Nenhum runtime OpenCode adicional instalado pela receita."},
+        {"path": "npm-shrinkwrap.json", "detail": "Lock efetivo publicado, precedência npm-shrinkwrap sobre package-lock; package-lock ausente no snapshot. Vitest resolvido 4.1.11 (não o mínimo ^4.1.9 do manifesto). npm ci, sem recriar peers/lock."},
+        {"path": "vitest.config.ts", "detail": "include tools/test/**/*.test.ts; testTimeout 15000; não separa unit/integration por projetos. Configs lab/stryker são runners de outros experimentos e não substituem o escopo unitário."},
+        {"path": "docs/testing.md", "detail": "Tabela original separa Unit tools/test/unit de Integration tools/test/integration e demais categorias. Receita compõe npm test -- tools/test/unit, encaminhamento do diretório inteiro dessa categoria ao Vitest original, sem alterar include/setup. Guia exige Python3 para T1b (integração), fora do escopo unitário."},
+        {"path": ".github/workflows/test.yml", "detail": "Job test: Node22, npm ci, typecheck e npm test amplo. Job v1-coverage instala OpenCode global e roda smoke separado; não faz parte da receita unitária."}
+      ]
+    },
+    {
+      "repository_id": 1164258973,
+      "repository_url": "https://github.com/mossglenn/armature",
+      "commit_sha": "8acaa14e01102a9e4e7a5941765113539c43c613",
+      "recipe_version": 1,
+      "image": "node@sha256:539d4d5b9c0df96bb9d1229264d358dc816e8592cb8867828a580b527e7ad0fa",
+      "platform": "linux/amd64",
+      "tools": {"node": "22.23.4", "npm": "10.9.9", "vitest": "5.0.3"},
+      "lockfiles": [{"path": "package-lock.json", "sha256": "04ea3f39182df618666d83e622dd3a1c019c4376f626b69f5b704e6ef5c671b4", "manager": "npm"}],
+      "environment": {},
+      "phases": {"installation": [{"argv": ["npm", "ci"], "cwd": "."}], "preparation": [], "unit_suite": []},
+      "unit_scope": {
+        "status": "not_evaluated", "code": "UNIT_SCOPE_UNRESOLVED",
+        "packages": [
+          {"path": ".", "name": "armature", "scope": "npm test delega npm test --workspace app; sem suíte própria."},
+          {"path": "app", "name": "app", "scope": "test='vitest run'; include lib/**/*.test.ts mistura testes puros e integração com TerminusDB; setup global obrigatório inclusive para arquivos puros. E2E app/e2e é separado."},
+          {"path": "packages/client", "name": "@armature/client", "scope": "Sem script test; teste de cliente está em app/lib/api/client.test.ts; install-check é verificação de consumidor externo separada na CI."},
+          {"path": "packages/types", "name": "@armature/types", "scope": "Sem script test; exports TypeScript fonte, sem build necessário ao npm test declarado."},
+          {"path": "scripts", "name": "scripts", "scope": "Fora dos workspaces; sem test; cliente TerminusDB usado apenas no bootstrap da suíte de contrato."},
+          {"path": "packages/client/install-check", "name": "armature-client-install-check", "scope": "Fixture de instalação externa com Next/tsx/Vitest, executada por run.sh em job separado; não comprova escopo unitário original."}
+        ],
+        "evidence": ["package.json", "app/package.json", "app/vitest.config.mts", ".github/workflows/ci.yml"],
+        "external_services": {"status": "not_evaluated", "message": "Dependência real TerminusDB comprovada para npm test AMPLO: setup exige TERMINUS_*, faz fetch de User, branch/write/read e cleanup contra store real. Sem prova da unidade separada, não atribuir rejeição unitária a essa suíte mista.", "evidence": ["app/vitest.config.mts", "app/vitest.global-setup.mts", "app/vitest.env.ts", ".github/workflows/ci.yml"]}
+      },
+      "limits": {"cpus": 4, "memory_bytes": 8589934592, "installation_seconds": 1200, "preparation_seconds": 600, "unit_suite_seconds": 1800},
+      "resolution_status": "not_evaluated",
+      "resolution": {"code": "UNIT_SCOPE_UNRESOLVED", "message": "Node22/npm exatos inspecionados; não existe separação unitária comprovada que preserve setup/config original. Não iniciar TerminusDB nem preparar seed. Comandos de contrato ficam somente como evidência, sem execução ou receita fictícia de unidade.", "evidence": ["app/vitest.config.mts", "app/vitest.global-setup.mts", ".github/workflows/ci.yml"]},
+      "evidence": [
+        {"path": "package.json", "detail": "workspaces=['app','packages/*']; test='npm test --workspace app'."},
+        {"path": "package-lock.json", "detail": "Lock raiz efetivo do workspace; Vitest 5.0.3 com engines ^22.12.0 || ^24.0.0 || >=26.0.0. scripts/package-lock.json é separado e não é necessário a um escopo unitário ainda desconhecido."},
+        {"path": "app/package.json", "detail": "test='vitest run'; test:e2e='playwright test'; sem test:unit. Builds hub/operator/Next não são pré-requisitos de unidade demonstrados."},
+        {"path": "packages/client/package.json", "detail": "Somente typecheck; export ./src/index.ts e peer local @armature/types."},
+        {"path": "packages/types/package.json", "detail": "Somente typecheck; exports ./src/types.ts e ./src/schemas.ts, já versionados."},
+        {"path": "scripts/package.json", "detail": "Pacote fora dos workspaces; terminusdb ^12.0.5 e comando sync de documentação; nenhuma suíte própria."},
+        {"path": "packages/client/install-check/package.json", "detail": "Manifesto da fixture consumidora externa; CI executa packages/client/install-check/run.sh separadamente do contrato da app."},
+        {"path": "app/vitest.config.mts", "detail": "include lib/**/*.test.ts; globalSetup ['./vitest.global-setup.mts']; fileParallelism=false; comentário original: Integration tests against a live store. Não há projeto/include só unitário."},
+        {"path": "app/vitest.env.ts", "detail": "Lê .env.local opcional ou env CI; nenhum segredo/valor TERMINUS é transmitido pela receita."},
+        {"path": "app/vitest.global-setup.mts", "detail": "waitForStore exige TERMINUS_URL/DB/USER/PASS e faz fetch do store; warmUp cria branch, documento e consulta cobertura, deleteScratchBranch limpa branch; não é mock/banco embarcado."},
+        {"path": ".github/workflows/ci.yml", "detail": "Job contract sobe terminusdb-server:v12.0.7 separado, instala npm ci em scripts e raiz, executa wait_for_store.js/load_schema.js/seed_data.js e operator check antes npm test. Demonstra dependência do contrato, não de unidade separada."}
+      ]
+    },
+    {
+      "repository_id": 1421624693,
+      "repository_url": "https://github.com/HiAnur/anur-living-map",
+      "commit_sha": "6285658e0b03725860659a26de8a75415bf151db",
+      "recipe_version": 1,
+      "image": "node@sha256:6b9d4ea31e614e29f364bf75758458731eb1e105b80c99667438dd6b3fe262e0",
+      "platform": "linux/amd64",
+      "tools": {"node": "24.22.2", "npm": "11.19.1", "vitest": "5.0.5"},
+      "lockfiles": [{"path": "package-lock.json", "sha256": "a6e96dd58b206572408aace437f1787385ecb426d3748e177be00bb013d4ad0a", "manager": "npm"}],
+      "environment": {},
+      "phases": {"installation": [{"argv": ["npm", "ci"], "cwd": "."}], "preparation": [], "unit_suite": [{"argv": ["npm", "test"], "cwd": "."}]},
+      "unit_scope": {
+        "status": "approved", "code": null,
+        "packages": [
+          {"path": ".", "name": "living-map", "scope": "npm test=vitest run; descoberta Vitest original sem filtro adicional: ledger, server, skill, web e team/live/project.test.js. Nenhuma integração/E2E separada declarada."},
+          {"path": "team/live", "name": "anur-living-map", "scope": "Pacote aninhado sem test nem dependências declaradas; project.test.js importa Vitest da raiz e é coberto pela descoberta original. Não instalar pacote separadamente."}
+        ],
+        "evidence": ["package.json", "vite.config.ts", "team/live/package.json", "team/live/project.test.js", "CONTRIBUTING.md"],
+        "external_services": {"status": "not_evaluated", "message": "Documentação indica provider/transcripts simulados sem rede/API key; auth.test cria HTTP temporário e SQLite embarcado, recursos permitidos. Confirmação completa de serviços permanece pendente da observação.", "evidence": ["CONTRIBUTING.md", "server/auth.test.ts"]}
+      },
+      "limits": {"cpus": 4, "memory_bytes": 8589934592, "installation_seconds": 1200, "preparation_seconds": 600, "unit_suite_seconds": 1800},
+      "resolution_status": "resolved",
+      "resolution": {"code": null, "message": "Manifesto oficial node:24-bookworm linux/amd64 resolvido em 2026-11-07 e pull por digest; container confiável isolado reportou Node24.22.2/npm11.19.1. Satisfaz >=23.6 e engines Vitest5; segue major24 CI. Não comprova executor/instrumento/candidatas.", "evidence": ["package.json", "package-lock.json", ".github/workflows/ci.yml"]},
+      "evidence": [
+        {"path": "package.json", "detail": "engines.node >=23.6; test='vitest run'; prepare='husky'. npm ci normal preserva prepare; nenhum build é necessário ao comando test. Sem workspaces."},
+        {"path": "package-lock.json", "detail": "Lock raiz efetivo; Vitest 5.0.5 engines ^22.12.0 || ^24.0.0 || >=26.0.0. Node23 não satisfaz esse lock apesar do mínimo do manifesto."},
+        {"path": "vite.config.ts", "detail": "Config original Vite React/Tailwind, sem filtros de testes/escopos separados; não importar config durante inspeção."},
+        {"path": ".github/workflows/ci.yml", "detail": "Node24; npm ci --ignore-scripts na CI para evitar hook local Husky; receita usa npm ci preservando lifecycle original em vez de remover scripts. npm run check inclui vitest run; build vem depois, não é pré-requisito."},
+        {"path": "CONTRIBUTING.md", "detail": "npm install também instala hook; Node23.6+ executa TS diretamente. Testes ledger usam modelo roteirizado e transcripts locais, sem API key/rede. eval/* é experimento separado que chama modelo, fora do test."},
+        {"path": "team/live/package.json", "detail": "Apenas start=node server.js, sem test ou dependencies; Node>=22. Não há lock próprio nem instalação necessária para project.test.js."},
+        {"path": "team/live/project.test.js", "detail": "Importa describe/expect/it de vitest e placeNew/tidy/tidyTree locais; incluído no runner raiz sem segunda passagem."},
+        {"path": "server/auth.test.ts", "detail": "Provider fictício name=none, diretório temporário, ledger SQLite e createApp(...).listen em loopback; afterAll fecha server/ledger. Não é serviço real separado."}
+      ]
+    },
+    {
+      "repository_id": 1150946629,
+      "repository_url": "https://github.com/abinauv/dental-erp",
+      "commit_sha": "8d0135085c4ab77c270d531ece05b76d4139e44c",
+      "recipe_version": 1,
+      "image": null,
+      "platform": "linux/amd64",
+      "tools": {"node": null, "npm": null, "vitest": "5.0.5"},
+      "lockfiles": [{"path": "package-lock.json", "sha256": "465e36ae46f51fe0e7da514f1419d139e0d86901701db0ab6804721cdb2be1f3", "manager": "npm"}],
+      "environment": {},
+      "phases": {"installation": [{"argv": ["npm", "ci"], "cwd": "."}], "preparation": [], "unit_suite": [{"argv": ["npm", "test", "--", "tests/unit"], "cwd": "."}]},
+      "unit_scope": {
+        "status": "approved", "code": null,
+        "packages": [{"path": ".", "name": "dental-erp", "scope": "Único pacote. tests/README.md define tests/unit como Pure unit tests for lib utilities, separado das categorias components/hooks/api/integration/database/etc. Encaminhar o diretório unit inteiro ao script original npm test preserva seu setup/jsdom/include, sem selecionar só a candidata."}],
+        "evidence": ["tests/README.md", "vitest.config.ts", "package.json"],
+        "external_services": {"status": "not_evaluated", "message": "setup fornece mocks de fetch e ambiente fictício; README documenta mocks Prisma/auth/gateways. DATABASE_URL e SDKs não comprovam dependência real da unidade; ausência completa de serviços ainda não observada.", "evidence": ["tests/setup.ts", "tests/README.md"]}
+      },
+      "limits": {"cpus": 4, "memory_bytes": 8589934592, "installation_seconds": 1200, "preparation_seconds": 600, "unit_suite_seconds": 1800},
+      "resolution_status": "not_evaluated",
+      "resolution": {"code": "ENVIRONMENT_REQUIREMENTS_CONFLICT", "message": "Node20 da .nvmrc/CI não satisfaz engines Vitest5.0.5 (^22.12 || ^24 || >=26). Sem trocar runtime para salvar candidatura: imagem/Node/npm ficam não resolvidos, sem rejeição científica inventada. Escopo usa a categoria Unit explicitamente documentada, não a suíte mista inteira.", "evidence": [".nvmrc", ".github/workflows/ci.yml", "package-lock.json", "tests/README.md"]},
+      "evidence": [
+        {"path": "package.json", "detail": "test='vitest run'; test:e2e='playwright test'; postinstall='prisma generate', prepare='husky', db:generate='prisma generate'. npm ci executa geração Prisma5.22.0 original sem servidor; não rodar migrations/seed nem build Next."},
+        {"path": "package-lock.json", "detail": "Lock efetivo único raiz; Vitest5.0.5 exige Node ^22.12.0 || ^24.0.0 || >=26.0.0; jsdom e Prisma5.22.0 resolvidos. Instalação congelada sem correção do lock."},
+        {"path": ".nvmrc", "detail": "Conteúdo original 20; diverge do engine do Vitest resolvido."},
+        {"path": ".github/workflows/ci.yml", "detail": "Job unit-tests chamado Unit & Integration Tests usa Node20, npm ci, npx prisma generate e npx vitest run --reporter=verbose --coverage. Geração já é postinstall; não duplicá-la. Sem serviço MySQL no job; ausência não prova mocks completos."},
+        {"path": "vitest.config.ts", "detail": "environment jsdom; setupFiles tests/setup.ts; include tests/**/*.{test,spec}.{js,ts,tsx}; exclude tests/e2e/**, node_modules, .next. Config amplia unidade para categorias mistas sem projeto unit separado."},
+        {"path": "tests/setup.ts", "detail": "Mocks navigation/headers/intl/fetch e observadores DOM; DATABASE_URL/segredos de fixture definidos pelo próprio teste. Receita não copia segredos/ambiente do host."},
+        {"path": "tests/README.md", "detail": "Vitest descrito unit/integration; estrutura distingue unit (Pure unit tests for lib utilities), integration (cross-module), database, API e components. Receita compõe npm test -- tests/unit, encaminhando a categoria unitária original inteira, sem seleção por nome/função ou edição da configuração."}
+      ]
+    },
+    {
+      "repository_id": 1442582077,
+      "repository_url": "https://github.com/saching13/macrotracker-server",
+      "commit_sha": "63d69dabed0f5ea58ae9784e40b930b5ca468702",
+      "recipe_version": 2,
+      "image": "node@sha256:1d9e3c29bf8eae6becc330e2546d461b23c1a86ac9207d015b5ea8ba26cbe210",
+      "platform": "linux/amd64",
+      "tools": {"node": "26.13.0", "pnpm": "10.34.7", "vitest": "5.0.5"},
+      "tool_bootstrap": {"package": "pnpm", "version": "10.34.7", "tarball": "https://registry.npmjs.org/pnpm/-/pnpm-10.34.7.tgz", "integrity": "sha512-upirxYVTmTM3W1lx9LxtbHOhtLftxKh559EC/lQj0eAjCdZ8YKEfBJVQk6luUhrZw7E4zdZUylvlY/N4s65IvQ=="},
+      "lockfiles": [{"path": "pnpm-lock.yaml", "sha256": "9c0db1979f75097f8914f585f1f400865051ffffacf9b13cc942460f8f8eee91", "manager": "pnpm"}],
+      "environment": {},
+      "phases": {
+        "installation": [{"argv": ["pnpm", "install", "--frozen-lockfile"], "cwd": "."}],
+        "preparation": [],
+        "unit_suite": [{"argv": ["pnpm", "test:unit"], "cwd": "."}]
+      },
+      "unit_scope": {
+        "status": "approved", "code": null,
+        "packages": [
+          {"path": ".", "name": "macrotracker-server", "scope": "test:unit='pnpm -r test:unit', uma passagem recursiva cobrindo todos pacotes com script."},
+          {"path": "apps/api", "name": "@macrotracker/api", "scope": "test:unit='vitest run --project unit'; test/unit/**/*.test.ts, projeto integration test/int excluído originalmente."},
+          {"path": "packages/shared", "name": "@macrotracker/shared", "scope": "test:unit='vitest run', packages/shared/test inteiro; testes importam diretamente ../src/engine/index.js. API resolve a condição development para a fonte; não há build prévio necessário."}
+        ],
+        "evidence": ["package.json", "apps/api/package.json", "packages/shared/package.json", "apps/api/vitest.config.ts"],
+        "external_services": {"status": "not_evaluated", "message": "app.test.ts injeta fakeDatabase e Fastify.inject sem Postgres/GoTrue; integration tem globalSetup próprio separado. Não subir compose nem avaliar integração; ausência completa de serviços requer observação da passagem unitária.", "evidence": ["apps/api/test/unit/app.test.ts", "apps/api/vitest.config.ts"]}
+      },
+      "limits": {"cpus": 4, "memory_bytes": 8589934592, "installation_seconds": 1200, "preparation_seconds": 600, "unit_suite_seconds": 1800},
+      "resolution_status": "resolved",
+      "resolution": {"code": null, "message": "Imagem oficial node:26-bookworm linux/amd64 fixa por digest: Node26.13.0/npm11.20.0. Bootstrap confiável pnpm10.34.7 verificado em Docker Engine29.6.1 Linux/amd64 em 2026-11-07 sem workspace candidato: tarball oficial com integridade SHA-512 fixada em tool_bootstrap, npm global --ignore-scripts em volume exclusivo /tools; novo container sem rede confirma pnpm --version 10.34.7 com volume readonly. O executor repete conferência de integridade/versão antes de liberar cada ambiente, preservando o mesmo volume readonly nas fases. Nenhuma dependência ou script candidato executado.", "evidence": ["package.json", "pnpm-workspace.yaml", ".github/workflows/ci.yml"]},
+      "evidence": [
+        {"path": "package.json", "detail": "packageManager pnpm@10.34.7; engines.node >=26; test:unit='pnpm -r test:unit'; test:int separado. Build de produção de todos pacotes não é pré-requisito imposto."},
+        {"path": "pnpm-lock.yaml", "detail": "Lock efetivo raiz (v9); importers apps/api e packages/shared resolvem Vitest5.0.5; integridade publicada no lock. Não trocar gerenciador nem atualizar resolução."},
+        {"path": "pnpm-workspace.yaml", "detail": "packages apps/* e packages/*; minimumReleaseAge10080; onlyBuiltDependencies esbuild. Preservar políticas/scripts originais na instalação frozen."},
+        {"path": "apps/api/package.json", "detail": "test:unit vitest run --project unit; test:int vitest run --project integration; dependência local shared workspace:*; API não precisa build de produção para Vitest."},
+        {"path": "packages/shared/package.json", "detail": "test:unit vitest run; exports development=./src/index.ts, types=./dist/index.d.ts, default=./dist/index.js. Vitest da API ativa development, portanto o export dist não justifica preparação de build."},
+        {"path": "packages/shared/test/engine.test.ts", "detail": "Testes importam diretamente ../src/engine/index.js e leem fixtures versionadas. Não dependem de dist nem de build de shared; CI executa test:unit antes de build."},
+        {"path": "apps/api/vitest.config.ts", "detail": "Projetos originais unit include test/unit/**/*.test.ts e integration include test/int/**/*.test.ts; só integração tem globalSetup, timeouts e serialização. resolve.conditions development preservado."},
+        {"path": "apps/api/test/unit/app.test.ts", "detail": "Comentário original No database or GoTrue; injeta fakeDatabase e URLs unused; usa app.inject e fecha app. Não é dependência real por mera presença de pg/URL."},
+        {"path": ".github/workflows/ci.yml", "detail": "pnpm/action-setup usa packageManager; pnpm install --frozen-lockfile, test:unit antes build. Job integration separado sobe Postgres+GoTrue e roda test:int; excluído integralmente desta receita."}
+      ]
+    }
+  ]
+}

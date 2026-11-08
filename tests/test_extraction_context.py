@@ -7,7 +7,7 @@ import pytest
 
 from robo_minerador.extraction import _extract_candidate
 from robo_minerador.extraction_analyzer import Analyzer, preflight
-from robo_minerador.extraction_context import load_instance_context
+from robo_minerador.extraction_context import load_instance_context, load_repository_context
 from robo_minerador.extraction_format import compact_records
 from robo_minerador.git_transport import GitTransport
 from robo_minerador.snapshot_store import SnapshotStore
@@ -124,4 +124,59 @@ def test_loader_refuses_forged_or_unavailable_evidence(snapshot_case, tamper):
         unit["schema_version"] = 2
     with pytest.raises(ValueError):
         load_instance_context(unit, repository, reasons, state.store)
+    assert state.transport.fetches == 1
+
+
+def test_batch_replays_once_and_matches_individual_loaders(tmp_path, monkeypatch):
+    """Duas unidades partilham uma análise sem perder a igualdade de evidência integral."""
+    import robo_minerador.extraction_context as loader
+
+    state = make_local_snapshot(tmp_path, {
+        "math.ts": "/** Incrementa. */\nexport function increment(x: number) { return x + 1; }\n"
+                   "/** Duplica. */\nexport function double(x: number) { return x * 2; }\n",
+        "math.test.ts": "import { test } from 'vitest';\nimport { increment, double } from './math';\n"
+                        "test('incrementa', () => { increment(2); });\n"
+                        "test('duplica', () => { double(2); });\n",
+    })
+    repository, reasons, units = published_case(state)
+    assert len(units) == 2 and all(unit["decision"] == "approved" for unit in units)
+    calls = {"open": 0, "projection": 0, "analysis": 0}
+    original_open, original_project, original_analyze = state.store.open_verified, loader.project_snapshot, Analyzer.analyze
+
+    def counted_open(reference):
+        """Conta aberturas verificadas do grupo sem substituir a verificação real."""
+        calls["open"] += 1
+        return original_open(reference)
+
+    def counted_project(*args, **kwargs):
+        """Conta projeções usando os bytes reais do snapshot local."""
+        calls["projection"] += 1
+        return original_project(*args, **kwargs)
+
+    def counted_analyze(self, *args, **kwargs):
+        """Conta análises do consumidor mantendo o parser confiável e seu replay."""
+        calls["analysis"] += 1
+        return original_analyze(self, *args, **kwargs)
+
+    monkeypatch.setattr(state.store, "open_verified", counted_open)
+    monkeypatch.setattr(loader, "project_snapshot", counted_project)
+    monkeypatch.setattr(Analyzer, "analyze", counted_analyze)
+    batch = load_repository_context(units, repository, reasons, state.store)
+    assert calls == {"open": 1, "projection": 1, "analysis": 1}
+    for unit in units:
+        individual = load_instance_context(unit, repository, reasons, state.store)
+        assert individual["instance"] == batch["instances"][unit["instance_id"]]
+        assert {k: v for k, v in individual.items() if k != "instance"} == {
+            k: v for k, v in batch.items() if k != "instances"}
+    forged = deepcopy(units)
+    forged[1]["function"]["reference_code"] += " // adulterado"
+    with pytest.raises(ValueError, match=f"divergem.*{units[1]['instance_id']}"):
+        load_repository_context(forged, repository, reasons, state.store)
+    missing = deepcopy(units)
+    missing[0]["instance_id"], missing[1]["instance_id"] = "a" * 64, "b" * 64
+    with pytest.raises(ValueError) as error:
+        load_repository_context(missing, repository, reasons, state.store)
+    assert all(unit["instance_id"] in str(error.value) for unit in missing)
+    with pytest.raises(ValueError, match="duplicada"):
+        load_repository_context([units[0], units[0]], repository, reasons, state.store)
     assert state.transport.fetches == 1

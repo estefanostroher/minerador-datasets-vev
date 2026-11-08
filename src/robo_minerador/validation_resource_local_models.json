@@ -1,0 +1,17 @@
+{
+  "name": "associated_resource_closure",
+  "version": 2,
+  "configuration_files": ["vitest.config.ts", "vitest.config.mts", "vitest.config.cts", "vitest.config.js", "vitest.config.mjs", "vitest.config.cjs", "vite.config.ts", "vite.config.mts", "vite.config.cts", "vite.config.js", "vite.config.mjs", "vite.config.cjs", "vitest.workspace.ts", "vitest.workspace.js", "vitest.workspace.json"],
+  "vite_trees": {
+    "7.3.6": "d8fb0c20419149231ae0828a36d08c44bc38863ce5d6971468c7617e221fa527",
+    "8.3.0": "122a16447367218259e099aa89a4bfc5a1ba2a692c3ecdd0eb3127c3956b24d4",
+    "8.3.4": "93291c533c941f82abd98152dc56d28c001a7281895b2cb0b8ad0a30ddea3def",
+    "8.3.5": "77647eb98ea57576e4b03c68df3b8b8f7ce8aa7bcfe81689ace928df6780ad2d",
+    "8.3.6": "bcbef8c152f43dce4d5e8d25e338430a23e7074dd10b61f45bdeb0ce2b012397"
+  },
+  "implementation_origin": "https://registry.npmjs.org/vite/-/vite-<version>.tgz; mesma lista canônica path/sha256 usada no modelo Vitest.",
+  "isolation": "Somente forks com isolate=true e environment=node efetivos. Contextos são rederivados do protocolo associado; módulos independentes em outros arquivos não entram por mera enumeração do censo.",
+  "configuration": "Configuração literal original, com defineConfig nominal de vitest/config ou vite; test include/exclude/setupFiles/globalSetup/environment/pool/isolate. Raiz e projeto selecionado devem concordar em configuração, fontes, setups e isolamento. Composição de projetos, raiz não observada, plugins, aliases e carregadores candidatos ficam pendentes. Dependências são censadas pelo Vite oficial e incluídas no grafo.",
+  "closure": "Alvo, arquivos associados inteiros, configuração efetiva, setups globais e por arquivo, imports/reexports transitivos, dados JSON lidos por URL literal original, manifests e tsconfig.json/extends aplicáveis. Import type/export type apagados não criam aresta executável; import misto preserva carregamento. Campos exports/imports e paths não utilizados não são efeitos; dependência não relativa utilizada sem modelo mantém pendência. Resolver compartilhado recusa ambiguidades e escapes. Não há fatiamento por declaração dentro do mesmo módulo: hooks e todos os efeitos compartilhados permanecem relevantes.",
+  "unobserved": "Arquivo necessário ausente/alterado, efeito opaco, resolução ambígua, dependência sem modelo ou falta de cobertura de carregamento mantém pendência. Configuração declarativa pode ser carregada pelo bundler Vite verificado; seus bytes originais e dependências são atestados separadamente."
+}

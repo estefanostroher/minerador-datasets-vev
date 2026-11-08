@@ -16,6 +16,10 @@ from .extraction_analyzer import preflight
 from .extraction_input import load_triage
 from .git_transport import GitTransport
 from .jsonl import write_jsonl
+from .validation import validate_repositories
+from .validation_docker import DockerExecutor
+from .validation_input import load_extraction
+from .validation_recipe import load_recipes
 from .triage import (
     _screen_candidate, diagnostic, failed_screen_records, load_discovery, screen_repositories,
 )
@@ -33,7 +37,7 @@ def _workers_argument(value: str) -> int:
 
 def _parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     """Interpreta o comando da etapa e suas opções de execução."""
-    parser = argparse.ArgumentParser(description="Descoberta, triagem e extração de repositórios no GitHub.")
+    parser = argparse.ArgumentParser(description="Descoberta, triagem, extração e validação de repositórios.")
     commands = parser.add_subparsers(dest="command", required=True)
     discover = commands.add_parser("discover", help="Descobrir repositórios candidatos.")
     discover.add_argument(
@@ -52,6 +56,9 @@ def _parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     extract = commands.add_parser("extract", help="Extrair funções, documentação e testes no SHA aprovado.")
     extract.add_argument("--overwrite", action="store_true",
                          help="Substituir intencionalmente a saída existente.")
+    validate = commands.add_parser("validate", help="Validar candidatas em Docker com uma passagem unitária.")
+    validate.add_argument("--overwrite", action="store_true",
+                          help="Substituir intencionalmente a saída existente.")
     for command in (discover, triage, extract):
         command.add_argument(
             "--workers", type=_workers_argument, default=config.DEFAULT_WORKERS,
@@ -59,6 +66,84 @@ def _parse_arguments(argv: list[str] | None) -> argparse.Namespace:
                  "Use 1 para execução sequencial.",
         )
     return parser.parse_args(argv)
+
+
+def _run_validation(args: argparse.Namespace) -> int:
+    """Confere pré-requisitos antes da escrita e fecha recursos próprios em todo encerramento."""
+    executor = None
+    records = None
+    try:
+        try:
+            input_path = config.VALIDATION_INPUT_PATH
+            output_path = config.VALIDATION_OUTPUT_PATH
+            if input_path.resolve() == output_path.resolve() or output_path.is_dir():
+                raise ValueError("Caminhos de entrada e saída incompatíveis.")
+            if any(parent.exists() and not parent.is_dir() for parent in output_path.parents):
+                raise ValueError("Diretório de publicação inválido.")
+            config.validate_validation_limits({
+                "cpus": config.VALIDATION_CPUS, "memory_bytes": config.VALIDATION_MEMORY_BYTES,
+                "installation_seconds": config.VALIDATION_INSTALLATION_SECONDS,
+                "preparation_seconds": config.VALIDATION_PREPARATION_SECONDS,
+                "unit_suite_seconds": config.VALIDATION_UNIT_SUITE_SECONDS,
+            })
+            if output_path.exists() and not args.overwrite:
+                print("A saída já existe. Use --overwrite para autorizar a substituição.")
+                return 2
+            groups, source = load_extraction(input_path)
+            catalog = load_recipes()
+            if groups:
+                GitTransport().preflight()
+                preflight()
+                executor = DockerExecutor()
+                executor.preflight()
+        except (ValueError, OSError, RuntimeError):
+            print("Entrada, configuração ou preflight inválidos: verifique o JSONL, as receitas, "
+                  "os limites e Git/Node/Docker Linux. A saída foi preservada.")
+            return 2
+
+        print(f"Validação: {len(groups)} repositórios; {source['eligible_count']} candidatas.")
+        records = validate_repositories(groups, source, catalog, executor=executor)
+        result = None
+
+        def tracked_records():
+            """Acompanha progresso e fechamento sem acumular os registros da execução."""
+            nonlocal result
+            for record in records:
+                if record.get("record_type") == "repository":
+                    print(f"Repositório {record['repository_id']}: {record['decision']}.")
+                if record.get("record_type") == "run_finished":
+                    result = record
+                yield record
+
+        try:
+            write_jsonl(output_path, tracked_records(), ensure_ascii=True, compact=True)
+        except (OSError, ValueError, RuntimeError):
+            if executor is not None:
+                executor.cancel()
+            print("Não foi possível concluir a saída da validação; o arquivo pode estar incompleto.")
+            return 1
+        if result is None:
+            print("Validação sem fechamento; o arquivo não representa uma execução completa.")
+            return 1
+        counts = result["instance_decisions"]
+        print(f"Repositórios: {result['repository_count']}; instâncias: {result['instance_count']}; "
+              f"aprovadas: {counts['approved']}; rejeitadas: {counts['rejected']}; "
+              f"pendentes: {counts['not_evaluated']}; erros operacionais: {result['operational_errors']}; "
+              f"estado: {result['status']}; saída: {output_path}")
+        return 0 if result["status"] == "completed" else 1
+    except KeyboardInterrupt:
+        if executor is not None:
+            executor.cancel()
+        print("Validação cancelada; confira o fechamento do arquivo antes de utilizá-lo.")
+        return 1
+    finally:
+        try:
+            if records is not None:
+                records.close()
+        finally:
+            # Também recolhe o executor se preflight/escrita falhou antes de iniciar o gerador.
+            if executor is not None:
+                executor.close()
 
 
 def _run_extraction(args: argparse.Namespace) -> int:
@@ -200,6 +285,8 @@ def _run_triage(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     """Valida a execução, coordena a coleta e persiste o único JSONL da etapa."""
     args = _parse_arguments(argv)
+    if args.command == "validate":
+        return _run_validation(args)
     try:
         config.validate_workers(args.workers)
     except ValueError as error:

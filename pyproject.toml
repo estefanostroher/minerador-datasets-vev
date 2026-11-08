@@ -19,4 +19,4 @@ where = ["src"]
 exclude = ["robo_minerador.typescript*"]
 
 [tool.setuptools.package-data]
-robo_minerador = ["typescript/*.mjs", "typescript/package.json", "typescript/package-lock.json"]
+robo_minerador = ["validation_recipes.json", "validation_resource_models.json", "validation_resource_local_models.json", "typescript/*.mjs", "typescript/package.json", "typescript/package-lock.json"]
