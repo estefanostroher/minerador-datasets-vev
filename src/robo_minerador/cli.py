@@ -6,6 +6,9 @@ from datetime import datetime, timedelta, timezone
 
 from . import config
 from .concurrency import RateLimitGate, WorkerPool
+from .deduplication import deduplicate_instances
+from .deduplication_format import validate_deduplication_records
+from .deduplication_input import load_deduplication_inputs
 from .discovery import (
     EXPECTED_API_ERRORS, _error_context, collect_repositories, failed_run_records,
     resolve_repository_sha,
@@ -37,7 +40,7 @@ def _workers_argument(value: str) -> int:
 
 def _parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     """Interpreta o comando da etapa e suas opções de execução."""
-    parser = argparse.ArgumentParser(description="Descoberta, triagem, extração e validação de repositórios.")
+    parser = argparse.ArgumentParser(description="Descoberta, triagem, extração, validação e deduplicação de repositórios.")
     commands = parser.add_subparsers(dest="command", required=True)
     discover = commands.add_parser("discover", help="Descobrir repositórios candidatos.")
     discover.add_argument(
@@ -59,6 +62,9 @@ def _parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     validate = commands.add_parser("validate", help="Validar candidatas em Docker com uma passagem unitária.")
     validate.add_argument("--overwrite", action="store_true",
                           help="Substituir intencionalmente a saída existente.")
+    deduplicate = commands.add_parser("deduplicate", help="Deduplicar instâncias aprovadas.")
+    deduplicate.add_argument("--overwrite", action="store_true",
+                             help="Substituir intencionalmente a saída existente.")
     for command in (discover, triage, extract):
         command.add_argument(
             "--workers", type=_workers_argument, default=config.DEFAULT_WORKERS,
@@ -66,6 +72,42 @@ def _parse_arguments(argv: list[str] | None) -> argparse.Namespace:
                  "Use 1 para execução sequencial.",
         )
     return parser.parse_args(argv)
+
+
+def _run_deduplication(args: argparse.Namespace) -> int:
+    """Prepara e confere a publicação inteira antes de abrir o arquivo de saída."""
+    writing = False
+    try:
+        try:
+            output = config.DEDUPLICATION_OUTPUT_PATH
+            inputs = (config.DEDUPLICATION_INPUT_PATH, config.DEDUPLICATION_EXTRACTION_PATH)
+            if output.is_dir() or any(parent.exists() and not parent.is_dir() for parent in output.parents):
+                raise ValueError("Caminho de publicação inválido.")
+            for path in inputs:
+                if output.resolve() == path.resolve() or (output.exists() and path.exists() and output.samefile(path)):
+                    raise ValueError("Entrada e saída coincidem.")
+            if output.exists() and not args.overwrite:
+                print("A saída já existe. Use --overwrite para autorizar a substituição.")
+                return 2
+            candidates, source = load_deduplication_inputs(*inputs)
+            records = deduplicate_instances(candidates, source)
+            result = validate_deduplication_records(records)
+        except (ValueError, OSError, RuntimeError):
+            print("Entrada, configuração ou preflight da deduplicação inválidos; a saída foi preservada.")
+            return 2
+        writing = True
+        try:
+            write_jsonl(output, records, ensure_ascii=True, compact=True)
+        except (ValueError, OSError, RuntimeError):
+            print("Não foi possível concluir a deduplicação; o arquivo pode estar incompleto.")
+            return 1
+        print(f"Elegíveis: {result['eligible_count']}; representantes: {result['representative_count']}; "
+              f"duplicatas: {result['duplicate_count']}; grupos duplicados: {result['duplicate_group_count']}; "
+              f"saída: {output}")
+        return 0
+    except KeyboardInterrupt:
+        print("Deduplicação cancelada; " + ("o arquivo pode estar incompleto." if writing else "a saída foi preservada."))
+        return 1
 
 
 def _run_validation(args: argparse.Namespace) -> int:
@@ -285,6 +327,8 @@ def _run_triage(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     """Valida a execução, coordena a coleta e persiste o único JSONL da etapa."""
     args = _parse_arguments(argv)
+    if args.command == "deduplicate":
+        return _run_deduplication(args)
     if args.command == "validate":
         return _run_validation(args)
     try:

@@ -8,6 +8,8 @@ A **descoberta**, a **triagem estática** e a **extração estática concorrente
 
 A **validação dinâmica** está implementada com CLI, receitas, executor Docker, instrumento Vitest e publicação por instância. A execução real mais recente avaliou 190 candidatas de seis origens: **4 aprovadas, 3 rejeitadas e 183 pendentes**, com estado `partial`. A aprovação comprova pelo menos quatro casos positivos associados à implementação original; a auditoria de recursos é exclusivamente diagnóstica.
 
+A **deduplicação exata** está implementada e produz um índice auditável, ainda não o dataset final. Na execução real registrada abaixo, as quatro instâncias aprovadas na validação foram representantes; não houve duplicatas nessa população.
+
 - [Especificação aprovada — 2026-10-29](docs/superpowers/specs/2026-10-29-minerador-incremental-design.md)
 - [Plano da descoberta — 2026-10-29](docs/superpowers/plans/2026-10-29-descoberta.md)
 - [Plano da triagem — 2026-10-31](docs/superpowers/plans/2026-10-31-triagem.md)
@@ -18,6 +20,7 @@ A **validação dinâmica** está implementada com CLI, receitas, executor Docke
 - [Contexto por instância — contrato](docs/superpowers/specs/2026-11-03-contexto-por-instancia-design.md) e [implementação e evidências](docs/superpowers/plans/2026-11-03-contexto-por-instancia.md)
 - [Extração v3 — contrato](docs/superpowers/specs/2026-11-03-snapshot-reutilizavel-design.md), [plano](docs/superpowers/plans/2026-11-03-snapshot-reutilizavel-extracao.md) e [evidências finais — 2026-11-04](docs/superpowers/plans/2026-11-04-extracao-v3-evidencias.md)
 - [Validação dinâmica — contrato](docs/superpowers/specs/2026-11-07-validacao-design.md) e [plano e registro de execução](docs/superpowers/plans/2026-11-07-validacao.md)
+- [Deduplicação exata — contrato](docs/superpowers/specs/2026-11-12-deduplicacao-design.md) e [plano](docs/superpowers/plans/2026-11-12-deduplicacao.md)
 
 A integração com a API real foi **verificada em uma coleta pequena**, com cinco candidatos e cinco SHAs resolvidos, incluindo a conferência de um SHA e da data de criação no GitHub. O arquivo real já existente do pesquisador foi inspecionado e preservado; a reprodução adicional ocorreu em memória, sem nova escrita pela CLI. As evidências estão no [plano da descoberta](docs/superpowers/plans/2026-10-29-descoberta.md).
 
@@ -304,6 +307,27 @@ As inspeções e o replay de dez snapshots acima são **históricos, anteriores 
 O [relatório final v3](docs/superpowers/plans/2026-11-04-extracao-v3-evidencias.md) registra o replay offline dos cinco snapshots: **189 approved, 76 rejected e 2.495 not_evaluated**, em 2.760 unidades. Na coorte de 191: **188 approved e 3 pendentes**, ganho de 185 aprovações. As três pendências decorrem de projeção textual com NUL, não de aquisição ausente/corrompida. Houve prova do loader e segunda passagem HiAnur no mesmo store, sem rede. Nada disso executou candidatos ou substituiu resultados do usuário.
 
 A **rodada mais recente, após o fix P1 de contexto JS**, confirmou igualdade integral das 2.760 instâncias e cinco repositórios, exceto horário: cinco cache hits, zero misses/metadados/fetch/aquisições/sockets, pipeline de **400,231 s**, sem timeout. O loader `nextTip` passou novamente no mesmo store após fechamento normal. As 47 fontes JS desse corpus já tinham AST no programa original; a rodada comprova estabilidade, enquanto as regressões TS/JS cobrem o cenário adversarial `allowJs=false`. O coordenador informou **501 testes Python aprovados (685,99 s), 92 Node aprovados (1,561 s)** e `extract --help` com saída 0. As revisões de aderência e qualidade do fix JS estão **APPROVED**; o revisor de qualidade também executou os 92 testes Node independentemente. A revisão documental final está **APPROVED**, sem achados após resolver o único P2 de status. Entrega autorizada para commit pelo coordenador, sem push; o hash é consultável no histórico Git.
+
+## Deduplicação exata
+
+Execute na raiz do projeto, sem token, rede, Docker ou execução de código candidato:
+
+```powershell
+.\.venv\Scripts\python.exe -m robo_minerador deduplicate --help
+.\.venv\Scripts\python.exe -m robo_minerador deduplicate
+```
+
+Os caminhos são `config.DEDUPLICATION_EXTRACTION_PATH` (`results/03_extracao.jsonl`), `config.DEDUPLICATION_INPUT_PATH` (`results/04_validacao.jsonl`) e `config.DEDUPLICATION_OUTPUT_PATH` (`results/05_deduplicacao.jsonl`). A saída existente é recusada; `deduplicate --overwrite` autoriza sua substituição intencional. Entrada, configuração, vínculos e publicação são conferidos antes de abrir a saída, preservando-a em caso de erro de entrada mesmo com overwrite. Falha de escrita ou cancelamento pode deixar saída incompleta. Os arquivos 03 e 04 são preservados.
+
+O comando valida integralmente o vínculo entre 03 e 04 e seleciona **somente instâncias `approved` do 04**, independentemente da decisão agregada do repositório. Estados `partial` das origens são registrados e não promovem pendências. Havendo aprovadas, o preflight requer **Node.js >=22** e o auxiliar confiável com **TypeScript 6.0.3**, instalado conforme a preparação da extração. O auxiliar confere sintaticamente os vínculos das testemunhas nos textos publicados, sem executar fontes candidatas. Com zero elegíveis, a integridade das entradas continua obrigatória, mas o auxiliar não é chamado.
+
+A representação `exact_instance_context_v1` inclui implementação, documentação, testes associados e todos os arquivos de contexto publicados da instância, inclusive textos de configuração do 03. Preserva caminhos, textos, multiplicidade e finais de linha, sem normalização. Ambiente e testemunhas de execução do 04 não integram a comparação. O SHA-256 indexa grupos; a igualdade é confirmada pelos **bytes canônicos integrais**. O menor `instance_id` lexicográfico é representante, e cada membro mantém sua origem.
+
+O JSONL contém `run_started`, uma linha `instance` por elegível e `run_finished`. A abertura registra caminhos, hashes e estados das origens, contagens e política. Cada instância traz `instance_id`, `repository_id`, `repository_url`, `commit_sha`, `decision`, `disposition`, `representative_instance_id`, `representation_sha256`, `representation_byte_count` e `criteria.exact_uniqueness`. Representantes são `approved` e referenciam a si mesmos; duplicatas são `rejected` e referenciam seu representante. O fechamento registra hashes das fontes, contagens, grupos duplicados, decisões e estado. Sem duplicatas, todas são representantes; sem elegíveis, há somente abertura e fechamento. O leitor portátil `robo_minerador.deduplication_format.load_deduplication` devolve todas as instâncias, inclusive duplicatas, e valida estrutura e vínculos; sozinho, não comprova igualdade dos bytes a partir dos hashes. O processamento prepara e valida toda a publicação em memória antes da escrita, sem garantia de memória limitada por streaming.
+
+Códigos de saída: **0** para conclusão, **1** para falha de escrita ou cancelamento, **2** para entrada/configuração inválida ou saída existente sem autorização. O 05 é um índice auditável, não o dataset final; a construção futura deve selecionar explicitamente os representantes.
+
+Na execução real de 12/11/2026, o 04 continha **190 instâncias: 4 approved, 3 rejected e 183 not_evaluated**. O 05 terminou `completed` com **4 elegíveis, 4 representantes, 0 duplicatas e 0 grupos duplicados**; ambas as origens estavam `partial`. A CLI levou **177,708 s**. O leitor portátil aceitou o resultado e uma reprodução em memória coincidiu nos registros exceto timestamps; hashes dos arquivos 03 e 04 permaneceram iguais antes e depois. Não houve grupo duplicado real para comparar nesta população.
 
 ## Validação dinâmica em Docker
 
