@@ -10,6 +10,8 @@ A **validação dinâmica** está implementada com CLI, receitas, executor Docke
 
 A **deduplicação exata** está implementada e produz um índice auditável, ainda não o dataset final. Na execução real registrada abaixo, as quatro instâncias aprovadas na validação foram representantes; não houve duplicatas nessa população.
 
+A **construção do dataset** está implementada e foi executada sobre as publicações reais: o arquivo 06 contém quatro instâncias, correspondentes aos quatro representantes do 05.
+
 - [Especificação aprovada — 2026-10-29](docs/superpowers/specs/2026-10-29-minerador-incremental-design.md)
 - [Plano da descoberta — 2026-10-29](docs/superpowers/plans/2026-10-29-descoberta.md)
 - [Plano da triagem — 2026-10-31](docs/superpowers/plans/2026-10-31-triagem.md)
@@ -21,6 +23,7 @@ A **deduplicação exata** está implementada e produz um índice auditável, ai
 - [Extração v3 — contrato](docs/superpowers/specs/2026-11-03-snapshot-reutilizavel-design.md), [plano](docs/superpowers/plans/2026-11-03-snapshot-reutilizavel-extracao.md) e [evidências finais — 2026-11-04](docs/superpowers/plans/2026-11-04-extracao-v3-evidencias.md)
 - [Validação dinâmica — contrato](docs/superpowers/specs/2026-11-07-validacao-design.md) e [plano e registro de execução](docs/superpowers/plans/2026-11-07-validacao.md)
 - [Deduplicação exata — contrato](docs/superpowers/specs/2026-11-12-deduplicacao-design.md) e [plano](docs/superpowers/plans/2026-11-12-deduplicacao.md)
+- [Construção do dataset — contrato](docs/superpowers/specs/2026-11-14-construcao-dataset-design.md) e [plano](docs/superpowers/plans/2026-11-14-construcao-dataset.md)
 
 A integração com a API real foi **verificada em uma coleta pequena**, com cinco candidatos e cinco SHAs resolvidos, incluindo a conferência de um SHA e da data de criação no GitHub. O arquivo real já existente do pesquisador foi inspecionado e preservado; a reprodução adicional ocorreu em memória, sem nova escrita pela CLI. As evidências estão no [plano da descoberta](docs/superpowers/plans/2026-10-29-descoberta.md).
 
@@ -266,19 +269,19 @@ A extração **não confirma testes aprovados, quatro casos executados, ausênci
 | `criterion_reason` | `reason_id` e `text`. Define uma explicação uma única vez por execução, antes da primeira referência. IDs R001/R002/... seguem a primeira publicação ordenada, não a conclusão das threads. |
 | `instance` | `repository_id`, `instance_id`, decisão, função/implementação, documentação, testes e critérios. Cada critério conserva `status` e referencia sua explicação por `reason_ref`. `context_ref="repository"` substitui a lista completa de caminhos; subconjuntos ou ordens distintas permanecem explícitos em `context_paths`. |
 
-Cada objeto ocupa uma linha, com separadores compactos, sem espaços de apresentação. A saída é UTF-8 com escapes JSON para caracteres não ASCII, preservando inclusive nomes JavaScript com surrogates isolados; os valores originais são recuperados ao decodificar o JSON. Código de referência, documentação e testes continuam na instância. Arquivos completos, origem e valores comuns ficam no repositório, evitando repetição por função; a construção final os consolidará nas instâncias pertinentes.
+Cada objeto ocupa uma linha, com separadores compactos, sem espaços de apresentação. A saída é UTF-8 com escapes JSON para caracteres não ASCII, preservando inclusive nomes JavaScript com surrogates isolados; os valores originais são recuperados ao decodificar o JSON. Código de referência, documentação e testes continuam na instância. Arquivos completos, origem e valores comuns ficam no repositório, evitando repetição por função; a construção final os consolida nas instâncias pertinentes.
 
 Há um único snapshot por `repository_id` em cada execução, garantido pela validação da entrada. As instâncias herdam URL, SHA e horário desse registro. O bloco `reasons` é omitido somente quando reproduz exatamente os motivos dos critérios não aprovados; razões adicionais ou ordem diferente permanecem explícitas. O protocolo v3 verifica a evidência estática contra o snapshot; a compactação da publicação preserva os artefatos e IDs da análise.
 
 Para expandir metadados, use `robo_minerador.extraction_format.expand_instance(instance, repository, reasons)`, com `{reason_id: text}` dos registros `criterion_reason`. Aceita **v1/v2/v3**, restaura origem, textos de contexto, explicações e validação, sem buscar artefatos. Referências ausentes/incompatíveis geram erro. Ausência de `schema_version` identifica v1; novas execuções produzem v3, sem migração automática ou mistura de versões. `context_ref="repository"` refere-se aos textos publicados, não ao inventário completo do manifesto.
 
-Para preparar uma **approved v3** para a futura validação, use `robo_minerador.extraction_context.load_instance_context(instance, repository, reasons, store)`. O loader exige um `SnapshotStore`, verifica identidade, manifesto, objetos e evidências, reprojeta os textos e repete a análise confiável, comparando a unidade completa. É exclusivamente offline: cache ausente/corrompido gera erro, sem fallback de rede. Expandir legado não o promove a snapshot v3. Preserve **JSONL e cache** para reprodução.
+Para preparar uma **approved v3** para validação, use `robo_minerador.extraction_context.load_instance_context(instance, repository, reasons, store)`. O loader exige um `SnapshotStore`, verifica identidade, manifesto, objetos e evidências, reprojeta os textos e repete a análise confiável, comparando a unidade completa. É exclusivamente offline: cache ausente/corrompido gera erro, sem fallback de rede. Expandir legado não o promove a snapshot v3. Preserve **JSONL e cache** para reprodução.
 
 Issues com o mesmo payload, exceto o caminho, ficam agrupadas no repositório: `issue_id`, `affected_count` e `affected_paths` preservam as ocorrências e todos os caminhos, inclusive repetições. Mensagens, status HTTP, cabeçalhos ou outros detalhes diferentes não são fundidos; issues globais ficam separadas das issues por arquivo. O diagnóstico correspondente contém `repository_id`, `issue_ref`, `affected_count` e `observed_at`, além de `last_observed_at` quando os horários divergem. Sua mensagem e seus caminhos são obtidos na issue referenciada. Erros sem issue correspondente, como falha tardia ao fechar o cliente, continuam com seus detalhes no diagnóstico.
 
 O `instance_id` é SHA-256 da identidade do repositório, SHA do commit, caminho, intervalo de linhas, ordinal lexical entre declarações na mesma linha, tipo e nome da unidade. Não depende do horário ou da ordem de conclusão das threads. Os critérios são `identifiable_implementation`, `associated_documentation`, `direct_test_association`, `nontrivial_implementation` e `preserved_local_context`. Qualquer rejeição determina `rejected`; todos aprovados permitem `approved`; os demais casos ficam `not_evaluated`.
 
-Somente instâncias `approved` serão encaminhadas à futura validação. As `not_evaluated` permanecem auditáveis, sem disparar recuperação automática. Um repositório `partial` pode conter instâncias `approved` quando suas pendências forem comprovadamente independentes delas. A ausência de documentação ou chamadas diretas só permite rejeição com busca suficientemente completa; evidência positiva não equivale a completude de contexto.
+Somente instâncias `approved` são encaminhadas à validação. As `not_evaluated` permanecem auditáveis, sem disparar recuperação automática. Um repositório `partial` pode conter instâncias `approved` quando suas pendências forem comprovadamente independentes delas. A ausência de documentação ou chamadas diretas só permite rejeição com busca suficientemente completa; evidência positiva não equivale a completude de contexto.
 
 `completed` indica processamento sem limitações/pendências; reprovações científicas isoladas não tornam a execução parcial. `partial` indica issues ou critérios pendentes com análise útil; `failed` indica que nenhum repositório pôde ser analisado. Zero aprovados na entrada produz uma execução vazia `completed`. No v3, como no v2, `error_count` conta diagnósticos `repository_error` publicados (grupos e falhas sem issue), enquanto `issue_count` conta as ocorrências originais representadas, incluindo erros de fechamento. Por exemplo, mil avisos idênticos por caminhos distintos podem resultar em `error_count=1` e `issue_count=1000`. Agrupar mensagens não aprova pendências nem melhora o estado da execução. Códigos de saída: **0** completed, **1** partial/failed/escrita, **2** entrada/configuração inválida ou saída existente sem autorização. O estado anterior `partial` permanece explícito como proveniência, sem prometer cobertura dos candidatos que não avançaram.
 
@@ -325,9 +328,48 @@ A representação `exact_instance_context_v1` inclui implementação, documenta�
 
 O JSONL contém `run_started`, uma linha `instance` por elegível e `run_finished`. A abertura registra caminhos, hashes e estados das origens, contagens e política. Cada instância traz `instance_id`, `repository_id`, `repository_url`, `commit_sha`, `decision`, `disposition`, `representative_instance_id`, `representation_sha256`, `representation_byte_count` e `criteria.exact_uniqueness`. Representantes são `approved` e referenciam a si mesmos; duplicatas são `rejected` e referenciam seu representante. O fechamento registra hashes das fontes, contagens, grupos duplicados, decisões e estado. Sem duplicatas, todas são representantes; sem elegíveis, há somente abertura e fechamento. O leitor portátil `robo_minerador.deduplication_format.load_deduplication` devolve todas as instâncias, inclusive duplicatas, e valida estrutura e vínculos; sozinho, não comprova igualdade dos bytes a partir dos hashes. O processamento prepara e valida toda a publicação em memória antes da escrita, sem garantia de memória limitada por streaming.
 
-Códigos de saída: **0** para conclusão, **1** para falha de escrita ou cancelamento, **2** para entrada/configuração inválida ou saída existente sem autorização. O 05 é um índice auditável, não o dataset final; a construção futura deve selecionar explicitamente os representantes.
+Códigos de saída: **0** para conclusão, **1** para falha de escrita ou cancelamento, **2** para entrada/configuração inválida ou saída existente sem autorização. O 05 é um índice auditável, não o dataset final; a construção seleciona explicitamente os representantes.
 
 Na execução real de 12/11/2026, o 04 continha **190 instâncias: 4 approved, 3 rejected e 183 not_evaluated**. O 05 terminou `completed` com **4 elegíveis, 4 representantes, 0 duplicatas e 0 grupos duplicados**; ambas as origens estavam `partial`. A CLI levou **177,708 s**. O leitor portátil aceitou o resultado e uma reprodução em memória coincidiu nos registros exceto timestamps; hashes dos arquivos 03 e 04 permaneceram iguais antes e depois. Não houve grupo duplicado real para comparar nesta população.
+
+## Construção do dataset
+
+Na raiz do projeto, após disponibilizar as cinco publicações íntegras, os comandos são:
+
+```powershell
+.\.venv\Scripts\python.exe -m robo_minerador build-dataset --help
+.\.venv\Scripts\python.exe -m robo_minerador build-dataset
+```
+
+Os caminhos são configurados em `src/robo_minerador/config.py`:
+
+| Constante | Caminho inicial |
+| --- | --- |
+| `DATASET_DISCOVERY_PATH` | `results/01_descoberta.jsonl` |
+| `DATASET_TRIAGE_PATH` | `results/02_triagem.jsonl` |
+| `DATASET_EXTRACTION_PATH` | `results/03_extracao.jsonl` |
+| `DATASET_VALIDATION_PATH` | `results/04_validacao.jsonl` |
+| `DATASET_DEDUPLICATION_PATH` | `results/05_deduplicacao.jsonl` |
+| `DATASET_OUTPUT_PATH` | `results/06_dataset.jsonl` |
+
+A construção verifica hashes, estados, contagens, identidades e vínculos das fontes, além de reproduzir os grupos exatos do 05. Seleciona cada representante aprovado no 05 e no 04, mesmo quando o repositório tem resultado global reprovado. Pendentes, rejeitadas e duplicatas não se tornam linhas. Origens `partial` permanecem identificadas. O construtor opera offline, sem token, Docker, fetch ou execução de código candidato; havendo aprovadas, requer Node.js >=22 e TypeScript 6.0.3 do auxiliar confiável instalado conforme a preparação da extração. Com zero representantes, valida as entradas e produz arquivo vazio sem chamar o auxiliar.
+
+Cada linha JSONL v1, ordenada por `instance_id`, contém:
+
+- `function`, `tests` e `documentation`: implementação original, associações diretas com trechos originais e documentação original, sem gerar enunciado.
+- `context`: textos completos, referência do snapshot, requisitos observados e `binary_policy="references_only"`. Referências existentes a recursos são preservadas; binários não são lidos nem incorporados em Base64. Não há garantia de inventário completo ou execução autônoma; dependências npm e recursos externos podem precisar de recuperação.
+- `source`: identidade, licença verificada na triagem, estrelas e README com estado de disponibilidade. `environment` repete receita, ambiente, lockfiles e execução do 04.
+- `validation`: instância, critérios da extração e evidência integral do repositório. A decisão global e diagnósticos de recursos permanecem identificados como globais; aprovação local não comprova que toda a suíte passou. `deduplication` registra representante e origens duplicadas.
+- `metrics`: tamanho em linhas físicas e complexidade ciclomática pela AST TypeScript, sem limiar de exclusão; casos e cobertura são copiados do 04, com contagem exata ou limite inferior e escopos `associated_tests` e `full_unit_suite` separados. Valores indisponíveis mantêm seus motivos.
+- `provenance`: caminhos, hashes SHA-256, estados e versões declaradas das cinco fontes, além das políticas e versão do construtor.
+
+O dataset não calcula Mutation Score nem classifica categorias comportamentais dos testes.
+
+Textos e evidências compartilhados são repetidos em cada linha. A preparação pode consumir memória proporcional às entradas e linhas completas. O leitor Python `robo_minerador.dataset_format.load_dataset(path)` valida o arquivo isoladamente, sem Node nem acesso às fontes; ele verifica estrutura e coerência interna, mas não reconstitui os hashes das fontes nem detecta perda de linhas completas. Um arquivo vazio legítimo é indistinguível de truncamento total: confronte IDs e quantidade com o 05.
+
+A saída existente exige `build-dataset --overwrite`; erros de entrada/configuração ou recusa retornam **2** e preservam a saída anterior. Sucesso retorna **0**; erro operacional, falha de escrita ou cancelamento retorna **1**. A preparação antecede a abertura, mas a escrita não é atômica e uma falha durante ela pode deixar saída incompleta. A CLI não aceita caminhos, limite ou workers como opções.
+
+Na construção real, o comando terminou com código **0** em **310,790 s**. O leitor `load_dataset` aceitou as **4** linhas e seus IDs coincidiram com os **4** representantes lidos do 05. O arquivo tem **68.000.071 bytes** e SHA-256 `e6485f67beedb245b22a066b144f6a9f2c3bac1096758a12caf94cce559307ca`. Os hashes das cinco entradas permaneceram iguais antes e depois. As contagens de casos válidos são limites inferiores, e a cobertura está indisponível nos dois escopos para as quatro instâncias.
 
 ## Validação dinâmica em Docker
 
@@ -437,7 +479,7 @@ Cobertura `associated_tests` é separada de `full_unit_suite`. A primeira requer
 | Cancelamento / falha de escrita | 1 | Pode não haver fechamento; não aceitar como execução completa. |
 | Entrada/configuração/preflight inválidos ou saída existente sem autorização | 2 | Recusa antes de abrir/substituir a saída. |
 
-Exit code sozinho não comprova culpa do projeto: OOM, orçamento do minerador, registry/daemon/instrumento indisponíveis são operacionais. Falha candidata identificada rejeita o critério pertinente; falha associada ou de hook pertinente rejeita a instância. Serviços observados pertencem ao diagnóstico de recursos e não alteram a decisão na política atual. Uma execução operacionalmente parcial pode conter instâncias aprovadas com todos os gates locais demonstrados. Somente instâncias `approved` poderão seguir à futura deduplicação.
+Exit code sozinho não comprova culpa do projeto: OOM, orçamento do minerador, registry/daemon/instrumento indisponíveis são operacionais. Falha candidata identificada rejeita o critério pertinente; falha associada ou de hook pertinente rejeita a instância. Serviços observados pertencem ao diagnóstico de recursos e não alteram a decisão na política atual. Uma execução operacionalmente parcial pode conter instâncias aprovadas com todos os gates locais demonstrados. Somente instâncias `approved` seguem à deduplicação.
 
 ## Verificações locais
 
@@ -466,9 +508,9 @@ Sem opt-in, as integrações Docker são puladas; skips não demonstram integra�
 
 `tests/test_discovery.py` contém **16 casos**, contando as parametrizações, aprovados também na execução final do coordenador. As regressões necessárias cobrem: limite 5 atendido na primeira página mesmo com contagem alta; limite 1000 atendido nas dez páginas sem dividir; limite 1001 com fallback somente após essas páginas; e parâmetros reais `sort=updated` / `order=desc` enviados pelo cliente. Permanecem as verificações de integridade: IDs únicos, fronteiras das partições, consultas de origem e SHA inicial preservados; incompletude na primeira página ou em página posterior, inclusive com limite atingido; saturação indivisível; falhas de SHA e de busca com dados preservados; e propagação de erros de programação. As operações de rede são simuladas. A integração real foi verificada separadamente pela coleta pequena acima.
 
-## Etapas seguintes
+## Etapas do pipeline
 
-Descoberta, triagem, extração e validação por instância estão implementadas. A validação foi exercitada em fixtures e na execução real descrita acima. Deduplicação e construção serão desenvolvidas depois. Cada etapa tem uma única saída JSONL:
+Descoberta, triagem, extração, validação por instância, deduplicação e construção estão implementadas. A validação e a construção foram exercitadas em fixtures e nas execuções reais descritas acima. Cada etapa tem uma única saída JSONL:
 
 | Etapa | Responsabilidade | Arquivo |
 | --- | --- | --- |
@@ -477,11 +519,11 @@ Descoberta, triagem, extração e validação por instância estão implementada
 | Extração | Identificar funções e métodos, implementação e documentação originais, chamadas diretas nos testes e contexto. | `results/03_extracao.jsonl` |
 | Validação | Executar a suíte completa uma vez e exigir ao menos quatro casos válidos diretamente associados por função. | `results/04_validacao.jsonl` |
 | Deduplicação | Remover duplicações exatas e preservar suas origens. | `results/05_deduplicacao.jsonl` |
-| Construção | Consolidar instâncias finais, métricas e amostra para inspeção manual. | `results/06_dataset.jsonl` |
+| Construção | Consolidar representantes, artefatos, evidências e métricas. | `results/06_dataset.jsonl` |
 
 A extração associa testes às funções por chamadas diretas e preserva seu contexto; ela não comprova que esses testes passam. A validação recebe somente instâncias aprovadas, instala dependências, prepara o necessário e executa a suíte unitária completa **uma vez**, contando os casos parametrizados efetivamente executados. Cada função precisa de pelo menos quatro casos válidos diretamente associados. Falha candidata identificada rejeita o critério pertinente sem ajustes corretivos; falhas alheias não são herdadas pela função e impedimento operacional permanece pendente.
 
-Os arquivos intermediários são ligados por `repository_id` e `repository_url`; a partir da extração, `instance_id` distingue funções do mesmo projeto. Somente a construção final consolidará todos os atributos. A extração usa TypeScript Compiler API; o 04 acrescenta evidências dinâmicas conforme o contrato próprio. As etapas posteriores ainda dependem de planejamento.
+Os arquivos intermediários são ligados por `repository_id` e `repository_url`; a partir da extração, `instance_id` distingue funções do mesmo projeto. A construção final consolida os atributos de cada representante. A extração usa TypeScript Compiler API; o 04 acrescenta evidências dinâmicas conforme o contrato próprio.
 
 ### Desenvolvimento e revisão
 
@@ -489,6 +531,6 @@ O trabalho ocorre no checkout atual, na branch `feature/minerator-pilot`, sem wo
 
 ## Escopo científico
 
-Popularidade e README não definem elegibilidade. Nas etapas futuras, cobertura disponível e complexidade serão registradas sem novos limiares de exclusão; cobertura indisponível é diferente de zero. A inspeção manual será preparada por amostragem reproduzível e realizada pelo pesquisador.
+Popularidade e README não definem elegibilidade. A construção registra cobertura disponível e complexidade sem novos limiares de exclusão; cobertura indisponível é diferente de zero. Amostragem e inspeção manual não fazem parte da construção do 06.
 
 Mutação, categorização comportamental dos testes, geração por LLMs e comparação entre geração direta e guiada ficam para trabalhos futuros. A existência de testes nos projetos não comprova adoção histórica de TDD.

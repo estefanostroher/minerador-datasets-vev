@@ -50,7 +50,7 @@ def empty_inputs(tmp_path, rows):
     return extraction, output
 
 
-def positive_inputs(monkeypatch, tmp_path):
+def positive_inputs(monkeypatch, tmp_path, *, mutate=None):
     """Produz 03/04 vinculados à mesma fonte e a eventos simulados de quatro casos."""
     _, catalog, _, execution = controlled_fixture((4,))
     contents = {item["path"]: item["content"] for item in execution["verified"]["context"]["files"]}
@@ -123,6 +123,8 @@ def positive_inputs(monkeypatch, tmp_path):
     recipe.update(state.candidate)
     catalog["recipes"] = {(identity["repository_id"], identity["commit_sha"]): recipe}
     execution["verified"] = verified
+    if mutate is not None:
+        mutate(execution)
     executor = FixtureExecutor(execution)
     monkeypatch.setattr(validation, "load_repository_context", lambda *args: verified)
     monkeypatch.setattr(validation, "prepare_workspace", lambda *args: SimpleNamespace(environment=execution["environment"]))

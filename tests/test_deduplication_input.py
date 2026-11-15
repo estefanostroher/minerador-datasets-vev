@@ -196,6 +196,27 @@ def test_helper_failure_is_sanitized(boundary, monkeypatch, failure):
     assert "segredo" not in str(error.value)
 
 
+@pytest.mark.parametrize("content", ["function (", "const value = 1;"])
+def test_invalid_typescript_is_integrity_error_not_tool_failure(content):
+    """Fonte inválida ou vínculo ausente não constitui falha operacional."""
+    binding = {"path": "bad.ts", "declaration_start": 0, "declaration_end": 1,
+               "point_start": 0, "point_end": 1}
+    batch = {1: {"files": {"bad.ts": content}, "bindings": [binding]}}
+    with pytest.raises(ValueError) as error:
+        reader._verify_bindings(batch)
+    assert not isinstance(error.value, reader.BindingVerificationUnavailable)
+
+
+@pytest.mark.parametrize("code,stdout", [(1, b""), (0, b"invalid")])
+def test_internal_or_protocol_failure_remains_operational(monkeypatch, code, stdout):
+    """Falhas internas e protocolo inválido permanecem indisponibilidade."""
+    monkeypatch.setattr(reader, "preflight", lambda: {"node": "node", "analyzer": {"version": "6.0.3"}})
+    monkeypatch.setattr(reader.subprocess, "run", lambda *args, **kwargs:
+                        type("Result", (), {"returncode": code, "stdout": stdout})())
+    with pytest.raises(reader.BindingVerificationUnavailable):
+        reader._verify_bindings({1: {"files": {}, "bindings": []}})
+
+
 def test_repeated_cases_are_batched(boundary, monkeypatch):
     """Desduplicação conserva apenas um vínculo por ponto e repositório."""
     rows, run = boundary

@@ -16,6 +16,10 @@ from .validation_format import validate_output_records
 from .validation_input import load_extraction
 
 
+class BindingVerificationUnavailable(ValueError):
+    """Indica impedimento na conferência sintática dos vínculos."""
+
+
 def read_jsonl_bytes(path):
     """Lê uma vez JSONL UTF-8 estrito e devolve registros e bytes originais."""
     raw = Path(path).read_bytes()
@@ -88,6 +92,7 @@ def _check_approved(unit, files, record, repository):
 
 def _verify_bindings(batches):
     """Executa o compilador confiável por repositório sem executar código candidato."""
+    invalid = False
     try:
         settings = preflight()
         helper = HELPER_DIRECTORY / "deduplication-bindings.mjs"
@@ -101,10 +106,15 @@ def _verify_bindings(batches):
             result = subprocess.run([settings["node"], "--max-old-space-size=512", str(helper)],
                                     input=json.dumps(payload, ensure_ascii=True).encode("utf-8"),
                                     capture_output=True, timeout=180, check=False)
+            if result.returncode == 2:
+                invalid = True
+                break
             if result.returncode != 0 or json.loads(result.stdout) != {"ok": True}:
                 raise ValueError()
     except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
-        raise ValueError("Não foi possível conferir os vínculos sintáticos da validação.") from None
+        raise BindingVerificationUnavailable("Não foi possível conferir os vínculos sintáticos da validação.") from None
+    if invalid:
+        raise ValueError("Não foi possível conferir os vínculos sintáticos da validação.")
 
 
 def load_deduplication_inputs(validation_path, extraction_path):

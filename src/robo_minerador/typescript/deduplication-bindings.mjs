@@ -1,14 +1,16 @@
 import ts from 'typescript';
 import { pathToFileURL } from 'node:url';
 
+class InvalidInput extends Error {}
+
 /** Confere declarações e chamadas creditadas somente sobre fontes originais em memória. */
 export function validateBindings(input) {
   if (ts.version !== '6.0.3') throw new Error('Compilador incompatível.');
   const files = new Map();
   for (const file of input.files) {
-    if (files.has(file.path)) throw new Error('Fonte duplicada.');
+    if (files.has(file.path)) throw new InvalidInput('Fonte duplicada.');
     const ast = ts.createSourceFile(file.path, file.content, ts.ScriptTarget.Latest, true);
-    if (ast.parseDiagnostics.length) throw new Error('Fonte sintaticamente inválida.');
+    if (ast.parseDiagnostics.length) throw new InvalidInput('Fonte sintaticamente inválida.');
     const calls = new Map();
     /** Indexa cada chamada pelos offsets UTF-16 originais. */
     function visit(node) {
@@ -20,7 +22,7 @@ export function validateBindings(input) {
   }
   for (const binding of input.bindings) {
     const file = files.get(binding.path);
-    if (!file) throw new Error('Fonte ausente.');
+    if (!file) throw new InvalidInput('Fonte ausente.');
     const { ast, calls } = file;
     const declaration = calls.get(`${binding.declaration_start}:${binding.declaration_end}`);
     const point = calls.get(`${binding.point_start}:${binding.point_end}`);
@@ -38,7 +40,7 @@ export function validateBindings(input) {
         || ast.getLineAndCharacterOfPosition(declaration.getStart(ast)).line + 1 !== binding.start_line
         || ast.getLineAndCharacterOfPosition(declaration.end).line + 1 !== binding.end_line
         || ast.getLineAndCharacterOfPosition(point.getStart(ast)).line + 1 !== binding.call_line
-        || point.expression.getText(ast) !== binding.expression) throw new Error('Vínculo sintático divergente.');
+        || point.expression.getText(ast) !== binding.expression) throw new InvalidInput('Vínculo sintático divergente.');
   }
   return { ok: true };
 }
@@ -51,5 +53,5 @@ async function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch(() => { process.exitCode = 1; });
+  main().catch(error => { process.exitCode = error instanceof InvalidInput ? 2 : 1; });
 }

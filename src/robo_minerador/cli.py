@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from . import config
 from .concurrency import RateLimitGate, WorkerPool
+from .dataset_cli import run_dataset
 from .deduplication import deduplicate_instances
 from .deduplication_format import validate_deduplication_records
 from .deduplication_input import load_deduplication_inputs
@@ -65,6 +66,9 @@ def _parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     deduplicate = commands.add_parser("deduplicate", help="Deduplicar instâncias aprovadas.")
     deduplicate.add_argument("--overwrite", action="store_true",
                              help="Substituir intencionalmente a saída existente.")
+    dataset = commands.add_parser("build-dataset", help="Construir dataset de representantes.")
+    dataset.add_argument("--overwrite", action="store_true",
+                         help="Substituir intencionalmente a saída existente.")
     for command in (discover, triage, extract):
         command.add_argument(
             "--workers", type=_workers_argument, default=config.DEFAULT_WORKERS,
@@ -327,6 +331,8 @@ def _run_triage(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     """Valida a execução, coordena a coleta e persiste o único JSONL da etapa."""
     args = _parse_arguments(argv)
+    if args.command == "build-dataset":
+        return run_dataset(args)
     if args.command == "deduplicate":
         return _run_deduplication(args)
     if args.command == "validate":

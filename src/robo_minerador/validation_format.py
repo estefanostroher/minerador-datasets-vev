@@ -4,6 +4,7 @@ import base64
 from collections import Counter
 from datetime import datetime, timezone
 import hashlib
+import json
 import re
 
 from .validation_evaluation import (REPOSITORY_CRITERIA, INSTANCE_CRITERIA, aggregate, _phase_criterion,
@@ -109,9 +110,12 @@ def _captures(value):
             _captures(item)
 
 
-def _repository(record):
+def _repository(record, *, rederive_diagnostic_resources=True, resource_scope=None):
     """Confere identidade compartilhada, receita integral e fases científicas publicadas."""
     pair = record["schema_version"] == 3
+    _require(type(rederive_diagnostic_resources) is bool and
+             (rederive_diagnostic_resources or (pair and resource_scope == PAIR_POLICY["resource_gate_scope"])),
+             "Replay de recursos só pode ser omitido no diagnóstico v3.")
     _criteria(record, PAIR_REPOSITORY_CRITERIA if pair else REPOSITORY_CRITERIA)
     snapshot = record.get("snapshot")
     if snapshot is not None:
@@ -199,6 +203,134 @@ def _repository(record):
             paths.add(file["path"])
     if pair:
         _require(type(record.get("resource_diagnostics")) is dict, "Diagnóstico de recursos ausente.")
+    if not rederive_diagnostic_resources and record.get("resource_evidence") is not None:
+        from pathlib import PurePosixPath
+        from .validation_resources import MODELS, _bindings, _method, resource_paths
+        audit = record["resource_evidence"]
+        _require(type(audit) is dict and set(audit) == {"scope", "scope_sha256", "snapshot", "universe_sha256",
+                 "method", "bindings", "sources", "files", "executed_paths", "complete", "limitations", "effects", "excluded_files"}
+                 and universe is not None and recipe is not None
+                 and audit.get("snapshot") == snapshot and audit.get("universe_sha256") == universe["sha256"]
+                 and audit.get("scope") == "unit_suite" and audit.get("scope_sha256") == recipe_hash(recipe["unit_scope"])
+                 and type(audit.get("method")) is dict and recipe_hash(audit["method"]) == recipe_hash(_method())
+                 and type(audit.get("sources")) is list
+                 and type(audit.get("files")) is list and type(audit.get("complete")) is bool
+                 and type(audit.get("limitations")) is list and all(type(v) is str for v in audit["limitations"])
+                 and type(audit.get("executed_paths")) is list and all(type(v) is str for v in audit["executed_paths"])
+                 and type(audit.get("bindings")) is dict and type(audit.get("effects")) is list
+                 and type(audit.get("excluded_files")) is list,
+                 "Auditoria diagnóstica inválida.")
+        expected = {item["path"]: item for item in universe["files"]}
+        sources = audit["sources"]
+        _require(len(sources) == len(expected) and all(type(item) is dict and set(item) == {"path", "content"}
+                 and item["path"] in expected and type(item["content"]) is str
+                 and hashlib.sha256(item["content"].encode("utf-8")).hexdigest() == expected[item["path"]]["sha256"]
+                 and len(item["content"].splitlines()) == expected[item["path"]]["line_count"] for item in sources)
+                 and len({item["path"] for item in sources}) == len(sources), "Fontes da auditoria inválidas.")
+        _require(all(type(item) is dict and item.get("path") in expected
+                 and item.get("sha256") == expected[item["path"]]["sha256"]
+                 and set(item) in ({"path", "sha256", "findings", "imports", "limitations"},
+                                   {"path", "sha256", "findings", "imports", "limitations", "limitation_details"})
+                 and type(item.get("findings")) is list and type(item.get("imports")) is list
+                 and type(item.get("limitations")) is list and all(type(v) is str for v in item["limitations"])
+                 for item in audit["files"])
+                 and len({item["path"] for item in audit["files"]}) == len(audit["files"])
+                 and {item["path"] for item in audit["files"]} == set(expected), "Arquivos da auditoria inválidos.")
+        texts = {item["path"]: item["content"] for item in sources}
+        for item in audit["files"]:
+            text = texts[item["path"]]
+            lines = len(re.split(r"\r\n|\r|\n", text)) - int(text.endswith(("\r", "\n")))
+            _require(not text and not item["findings"] or text and item["findings"] and type(item["findings"][0]) is dict
+                     and item["findings"][0].get("start_line") == 1
+                     and item["findings"][0].get("end_line") == lines
+                     and item["findings"][0].get("rule") in {"closed_graph_inert", "immutable_data", "unmodeled"},
+                     "Cobertura diagnóstica inválida.")
+            for link in item["imports"]:
+                _require(type(link) is dict and (set(link) == {"specifier", "model"}
+                         and type(link["specifier"]) is str and link["specifier"] in MODELS["apis"]
+                         and link["model"] == ("vitest" if link["specifier"].startswith("vitest") else "node")
+                         or set(link) == {"specifier", "path"} and type(link["specifier"]) is str and link["path"] in expected
+                         or set(link) == {"configuration", "path"} and link["configuration"] in {"snapshot_data", "setupFiles", "globalSetup"}
+                         and link["path"] in expected), "Importação diagnóstica inválida.")
+            if "limitation_details" in item:
+                _require(type(item["limitation_details"]) is list and len(item["limitation_details"]) == 1
+                         and len(item["limitations"]) == 1 and all(type(detail) is dict
+                         and set(detail) == {"message", "start_line", "expression"}
+                         and detail["message"] == item["limitations"][0] and type(detail["expression"]) is str
+                         and type(detail["start_line"]) is int and detail["start_line"] >= 1
+                         for detail in item["limitation_details"]), "Detalhes de limitação inválidos.")
+            else:
+                _require(not item["limitations"], "Limitação sem detalhes.")
+            for index, finding in enumerate(item["findings"]):
+                _require(type(finding) is dict and type(finding.get("start_line")) is int
+                         and type(finding.get("end_line")) is int
+                         and 1 <= finding["start_line"] <= finding["end_line"] <= expected[item["path"]]["line_count"]
+                         and finding.get("resource") in {"none", "mock", "temporary_files", "embedded_database", "simulation_server", "real_service", "unknown"}
+                         and finding.get("role") in {"effective_dependency", "not_used", "unknown"}
+                         and type(finding.get("rule")) is str and bool(finding["rule"]), "Achado diagnóstico inválido.")
+                base = {"start_line", "end_line", "resource", "role", "rule"}
+                if index == 0:
+                    _require(set(finding) == base and
+                             (finding["resource"], finding["role"], finding["rule"]) in {
+                                 ("none", "not_used", "closed_graph_inert"), ("none", "not_used", "immutable_data"),
+                                 ("unknown", "unknown", "unmodeled")}
+                             and (finding["rule"] == "unmodeled") == bool(item["limitations"]),
+                             "Achado integral inválido.")
+                else:
+                    resource_rules = {"none": "snapshot_json", "mock": "vitest", "temporary_files": "temporary_files",
+                                      "embedded_database": "embedded_database", "simulation_server": "simulation_server",
+                                      "real_service": "real_service"}
+                    extra = {"api", "request_url"} if finding["resource"] == "real_service" else set()
+                    _require(set(finding) == base | {"start", "end", "expression"} | extra
+                             and finding["resource"] in resource_rules and finding["rule"] == resource_rules[finding["resource"]]
+                             and finding["role"] == "effective_dependency" and not item["limitations"]
+                             and type(finding["start"]) is int and type(finding["end"]) is int
+                             and 0 <= finding["start"] < finding["end"] <= len(text.encode("utf-16-le", errors="surrogatepass")) // 2
+                             and type(finding["expression"]) is str and bool(finding["expression"]), "Operação diagnóstica inválida.")
+                    raw = text.encode("utf-16-le", errors="surrogatepass")
+                    _require(raw[2 * finding["start"]:2 * finding["end"]].decode("utf-16-le", errors="surrogatepass") == finding["expression"],
+                             "Trecho da operação diagnóstica divergente.")
+                    if extra:
+                        from urllib.parse import urlsplit
+                        _require(type(finding["request_url"]) is str, "URL diagnóstica inválida.")
+                        url = urlsplit(finding["request_url"])
+                        _require(finding["api"] in {"node:http.get", "node:https.get"} and url.scheme in {"http", "https"}
+                                 and url.hostname in MODELS["real_service_hosts"], "Serviço diagnóstico inválido.")
+        _require(audit["complete"] == (not audit["limitations"] and all(not item["limitations"] for item in audit["files"])),
+                 "Completude diagnóstica divergente.")
+        paths, _, _ = resource_paths(observation)
+        effects = [effect for command in observation.get("commands", [])
+                   for effect in (command.get("report") or {}).get("resource_effects", [])]
+        _require(audit["executed_paths"] == paths and audit["effects"] == effects
+                 and recipe_hash(audit["bindings"]) == recipe_hash(_bindings(recipe, record.get("environment", {}), observation)[0]),
+                 "Observações diagnósticas divergentes.")
+        for effect in audit["effects"]:
+            _require(type(effect) is dict and set(effect) == {"path", "sha256", "api", "url", "line", "column", "origin"}
+                     and type(effect["path"]) is str and _hash(effect["sha256"])
+                     and effect["api"] in {"node:http.get", "node:https.get"}
+                     and type(effect["url"]) is str and bool(effect["url"]) and effect["origin"] == "native_get"
+                     and type(effect["line"]) is int and effect["line"] > 0
+                     and type(effect["column"]) is int and effect["column"] > 0, "Efeito diagnóstico inválido.")
+            _path(effect["path"])
+        manifest = universe.get("manifest")
+        entries = {entry["path"]: entry for entry in manifest.get("entries", [])} if type(manifest) is dict else {}
+        excluded_paths = set()
+        for item in audit["excluded_files"]:
+            _require(type(item) is dict and set(item) == {"path", "oid", "rule", "resource", "role"}
+                     and type(item["path"]) is str and item["path"] not in excluded_paths
+                     and item["path"] not in expected and item["path"] not in paths
+                     and _hash(item["oid"], 40) and item["rule"] == "closed_graph_inert"
+                     and item["resource"] == "none" and item["role"] == "not_used"
+                     and item["path"] in entries and entries[item["path"]].get("oid") == item["oid"]
+                     and entries[item["path"]].get("mode") == "100644" and entries[item["path"]].get("type") == "blob"
+                     and not entries[item["path"]].get("lfs_pointer")
+                     and (PurePosixPath(item["path"]).name.upper() in MODELS["inert_file_names"]
+                          or PurePosixPath(item["path"]).suffix.lower() in MODELS["inert_suffixes"])
+                     and recipe_hash(manifest) == snapshot["manifest_sha256"]
+                     and all(manifest.get(key) == snapshot[key] for key in ("repository_id", "commit_sha", "tree_oid", "format")),
+                     "Exclusão diagnóstica inválida.")
+            _path(item["path"])
+            excluded_paths.add(item["path"])
     if resource is not None and resource["status"] in {"approved", "rejected"}:
         audit = record.get("resource_evidence")
         _require(universe is not None and resource == evaluate_resources(recipe, {"resource_universe": universe}, audit, observation, record.get("environment", {})),
@@ -273,7 +405,22 @@ def _instance(record, repository, resource_scope=None):
     if local:
         unit = {"instance_id": record["instance_id"], "tests": [association["test"] for association in counts["associations"]]}
         expected_counts, expected_cases = _count_instance(unit, observation)
-        _require(counts == expected_counts and cases == expected_cases, "Provas locais divergem dos streams verificados.")
+        associations = counts["associations"]
+        expected_associations = expected_counts["associations"]
+        def observed_cases(items):
+            """Compara o multiconjunto derivado do objeto de casos, preservando multiplicidade."""
+            return sorted(json.dumps(item, sort_keys=True, ensure_ascii=True) for item in items)
+        _require({k: v for k, v in counts.items() if k != "associations"} ==
+                 {k: v for k, v in expected_counts.items() if k != "associations"}
+                 and len(associations) == len(expected_associations)
+                 and all({k: v for k, v in actual.items() if k != "cases"} ==
+                         {k: v for k, v in expected.items() if k != "cases"}
+                         and type(actual.get("cases")) is list
+                         and observed_cases(actual["cases"]) == observed_cases(expected["cases"])
+                         for actual, expected in zip(associations, expected_associations))
+                 and {case["case_id"]: case for case in cases} ==
+                     {case["case_id"]: case for case in expected_cases},
+                 "Provas locais divergem dos streams verificados.")
         expected = "approved" if count is not None and count >= 4 else "rejected" if counts["counting_complete"] else "not_evaluated"
         _require(minimum == expected, "Limiar não corresponde à contagem local.")
         original_status = "approved" if cases else "rejected" if counts["counting_complete"] else "not_evaluated"
