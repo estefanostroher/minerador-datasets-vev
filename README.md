@@ -58,7 +58,15 @@ docker compose run --rm minerador --all 100
 
 `--discover` e `--all` aceitam quantidade positiva opcional; sem quantidade usam **1000**. `--all` executa todas as etapas na ordem; seletores combinados executam apenas as escolhidas, na ordem do pipeline. Cada etapa precisa das entradas produzidas anteriormente. Para substituir saídas existentes, acrescente `--overwrite`; sem ele, o coordenador recusa antes de iniciar qualquer etapa selecionada. Não há retomada automática.
 
-As saídas persistem em `./results` no host e os snapshots em `./.cache/robo-minerador/snapshots`; preserve ambos para reprodução. O código final **0** indica sucesso, **1** indica parcialidade aceita ou falha operacional/interrupção, e **2** indica argumentos, entrada/configuração ou saída recusados. Um resultado `partial` íntegro e recém-publicado nas quatro primeiras etapas pode permitir continuação; consulte os diagnósticos de cada arquivo.
+As saídas persistem em `./results` no host e os snapshots em `./.cache/robo-minerador/snapshots`; preserve ambos para reprodução. O código final **0** indica sucesso, **1** indica pendências aceitas ou falha operacional/interrupção, e **2** indica argumentos, entrada/configuração ou saída recusados. Um resultado `partial` íntegro e recém-publicado nas quatro primeiras etapas permite continuação. Na validação, um resultado `failed` também permite continuar quando a publicação inteira é válida e seus bytes são novos. Pendências permanecem `not_evaluated`; apenas instâncias aprovadas seguem para deduplicação e construção. Sem aprovadas, o pipeline chega ao `06_dataset.jsonl` vazio, mantendo o código geral **1** e os diagnósticos do 04. Saída antiga, inválida, ausente ou sem fechamento continua interrompendo a execução.
+
+Para executar novamente a validação e seguir até o dataset com as entradas 01–03 já disponíveis:
+
+```powershell
+docker compose run --rm --build minerador --validate --deduplicate --build-dataset --overwrite
+```
+
+Esse comando substitui as saídas 04–06. O código **1** pode aparecer mesmo após a construção final: confira as mensagens das etapas e os diagnósticos para distinguir conclusão com pendências de interrupção.
 
 O Compose concede cinco minutos para encerramento. Na primeira interrupção, o Python aguarda o filho sem prazo para permitir limpeza; uma segunda interrupção força o encerramento. Um SIGKILL externo, inclusive após expirar o prazo do Compose, pode interromper essa limpeza.
 

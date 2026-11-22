@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from robo_minerador import config
+from dataset_fixtures import failed_dataset_chain  # noqa: F401
 
 
 def test_help_is_available():
@@ -55,7 +56,7 @@ def test_partial_then_result(pipeline, monkeypatch, second, expected):
             return 1
         return second
     monkeypatch.setattr(pipeline, 'run_stage', run)
-    monkeypatch.setattr(pipeline.pipeline_status, 'accept_partial', lambda stage, path: True)
+    monkeypatch.setattr(pipeline.pipeline_status, 'accept_publication', lambda stage, path: True)
     assert pipeline.main(['--discover', '--triage']) == expected
     assert len(calls) == 2
 
@@ -64,7 +65,7 @@ def test_stale_partial_stops(pipeline, monkeypatch):
     config.OUTPUT_PATH.write_text('old')
     calls = []
     monkeypatch.setattr(pipeline, 'run_stage', lambda args: calls.append(args) or 1)
-    monkeypatch.setattr(pipeline.pipeline_status, 'accept_partial', lambda stage, path: True)
+    monkeypatch.setattr(pipeline.pipeline_status, 'accept_publication', lambda stage, path: True)
     assert pipeline.main(['--discover', '--triage', '--overwrite']) == 1
     assert len(calls) == 1
 
@@ -200,5 +201,45 @@ def test_invalid_new_partial_stops(pipeline, monkeypatch):
 @pytest.mark.parametrize('stage', ['--deduplicate', '--build-dataset'])
 def test_final_stages_never_continue_on_one(pipeline, monkeypatch, stage):
     monkeypatch.setattr(pipeline, 'run_stage', lambda args: 1)
-    monkeypatch.setattr(pipeline.pipeline_status, 'accept_partial', lambda *args: pytest.fail('checked'))
+    monkeypatch.setattr(pipeline.pipeline_status, 'accept_publication', lambda *args: pytest.fail('checked'))
     assert pipeline.main([stage]) == 1
+
+
+@pytest.mark.parametrize('publication', ['fresh', 'stale', 'invalid'])
+def test_failed_validation_to_empty_dataset(pipeline, monkeypatch, failed_dataset_chain, publication):
+    """Exerce os leitores e as CLIs finais reais, sem Docker ou candidato real."""
+    from robo_minerador import cli
+    from robo_minerador.deduplication_format import load_deduplication
+
+    paths, _ = failed_dataset_chain
+    for name, path in paths.items():
+        monkeypatch.setattr(config, f'DATASET_{name.upper()}_PATH', path)
+    monkeypatch.setattr(config, 'VALIDATION_OUTPUT_PATH', paths['validation'])
+    monkeypatch.setattr(config, 'DEDUPLICATION_INPUT_PATH', paths['validation'])
+    monkeypatch.setattr(config, 'DEDUPLICATION_EXTRACTION_PATH', paths['extraction'])
+    monkeypatch.setattr(config, 'DEDUPLICATION_OUTPUT_PATH', paths['deduplication'])
+    paths['deduplication'].unlink()
+    payload = paths['validation'].read_bytes()
+    if publication != 'stale':
+        paths['validation'].unlink()
+    calls = []
+
+    def run(args):
+        calls.append(args[0])
+        if args[0] == 'validate':
+            if publication != 'stale':
+                paths['validation'].write_bytes(payload if publication == 'fresh' else b'{invalid')
+            return 1
+        return cli.main(args)
+
+    monkeypatch.setattr(pipeline, 'run_stage', run)
+    assert pipeline.main(['--validate', '--deduplicate', '--build-dataset', '--overwrite']) == 1
+    if publication == 'fresh':
+        assert calls == ['validate', 'deduplicate', 'build-dataset']
+        assert config.DATASET_OUTPUT_PATH.read_bytes() == b''
+        instances, opening = load_deduplication(paths['deduplication'])
+        assert instances == [] and opening['sources']['validation']['status'] == 'failed'
+    else:
+        assert calls == ['validate']
+        assert not config.DATASET_OUTPUT_PATH.exists()
+        assert not paths['deduplication'].exists()

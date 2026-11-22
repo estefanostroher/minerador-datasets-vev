@@ -66,6 +66,8 @@ command = [sys.executable, "-m", "robo_minerador", *argv]
 
 ## Task 3: Continuação após parcialidade íntegra
 
+**Atualização 2026-11-18:** a regra abaixo registra o escopo histórico. O [ajuste de continuação](2026-11-18-continuacao-validacao.md) amplia a aceitação para validação `failed` íntegra e recém-publicada, usando `pipeline_status.accept_publication`, mantendo código geral 1 e permitindo dataset vazio.
+
 - [x] Inspecionar as fixtures e APIs dos leitores: `load_discovery`, `load_triage`, `load_extraction` e `validate_output_records`. Reutilizar builders de testes já existentes para construir publicações mínimas válidas.
 - [x] Criar `tests/test_pipeline_status.py` cobrindo fechamento parcial válido, `failed`, JSON truncado, fechamento ausente, contagens incoerentes e estado incompatível com a etapa. Confirmar falha antes de adicionar o módulo.
 - [x] Implementar `pipeline_status.accept_partial(stage, output)` como validação fechada: somente as quatro primeiras etapas podem continuar; chamar o leitor correspondente e verificar o estado validado `partial`. Para validação, ler JSONL integral e chamar `validate_output_records`. Erros de leitura/validação retornam falso ao coordenador, com mensagem de interrupção.

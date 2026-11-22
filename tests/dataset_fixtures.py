@@ -106,3 +106,20 @@ def empty_dataset_chain(tmp_path, extraction_rows):
     groups, source = load_extraction(extraction)
     rows = list(validation.validate_repositories(groups, source, {}, policy_version=2))
     return _chain(tmp_path, extraction, tmp_path / 'validation.jsonl', rows, None)
+
+
+@pytest.fixture
+def failed_dataset_chain(monkeypatch, tmp_path):
+    """Preserva uma candidata extraída, mas sem receita nem avaliação dinâmica."""
+    from robo_minerador.validation_recipe import resolve_recipe
+    from test_validation import controlled_fixture, FixtureExecutor
+
+    extraction, output, _, _ = positive_inputs(monkeypatch, tmp_path)
+    groups, source = load_extraction(extraction)
+    catalog = {'recipes': {}, 'sha256': 'd' * 64}
+    monkeypatch.setattr(validation, 'resolve_effective_recipe',
+                        lambda repository, catalog, *args: (resolve_recipe(repository, catalog), []))
+    executor = FixtureExecutor(controlled_fixture((4,))[3])
+    rows = list(validation.validate_repositories(groups, source, catalog, executor, object(), policy_version=2))
+    assert rows[-1]['status'] == 'failed' and not executor.calls
+    return _chain(tmp_path, extraction, output, rows, None)

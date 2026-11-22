@@ -6,6 +6,7 @@ import subprocess
 import uuid
 
 import pytest
+from dataset_fixtures import failed_dataset_chain  # noqa: F401
 
 
 pytestmark = pytest.mark.skipif(
@@ -138,3 +139,37 @@ assert not real_cli(['volume', 'ls', '-q', '--filter', 'label='+LABEL+'='+execut
             docker("rm", "-f", resource)
         for resource in docker("volume", "ls", "-q", "--filter", label).splitlines():
             docker("volume", "rm", resource)
+
+
+def test_failed_validation_reaches_empty_dataset_in_image(image, failed_dataset_chain, tmp_path):
+    """Exerce a imagem e subprocessos finais reais com validação fixture pendente."""
+    paths, _ = failed_dataset_chain
+    results = tmp_path / 'docker-results'
+    results.mkdir()
+    for source, target in (('discovery', '01_descoberta.jsonl'), ('triage', '02_triagem.jsonl'),
+                           ('extraction', '03_extracao.jsonl'), ('validation', '04_validacao.jsonl')):
+        (results / target).write_bytes(paths[source].read_bytes())
+    script = '''
+import json
+from pathlib import Path
+from robo_minerador import pipeline
+path = Path('results/04_validacao.jsonl')
+payload = path.read_bytes()
+path.unlink()
+real_run = pipeline.run_stage
+def run(args):
+    if args[0] == 'validate':
+        path.write_bytes(payload)
+        return 1
+    return real_run(args)
+pipeline.run_stage = run
+assert pipeline.main(['--validate', '--deduplicate', '--build-dataset']) == 1
+assert Path('results/06_dataset.jsonl').read_bytes() == b''
+rows = [json.loads(line) for line in Path('results/05_deduplicacao.jsonl').read_bytes().splitlines()]
+assert rows[0]['sources']['validation']['status'] == 'failed'
+assert rows[-1]['status'] == 'completed' and rows[-1]['representative_count'] == 0
+'''
+    output = docker('run', '--rm', '-i', '--mount', f'type=bind,src={results},dst=/app/results',
+                    '--entrypoint', 'python', image, '-', input=script)
+    assert 'build-dataset: 0' in output
+    assert (results / '06_dataset.jsonl').read_bytes() == b''

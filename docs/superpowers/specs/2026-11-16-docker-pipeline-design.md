@@ -71,7 +71,8 @@ O executor registra ownership e recolhe esse volume com os demais recursos próp
 | --- | --- |
 | Etapa retorna 0 | Avançar; o pipeline conserva eventual parcialidade anterior. |
 | Etapa retorna 1 e a saída atual é uma publicação válida com fechamento `partial` | Avançar e marcar o resultado geral como parcial. |
-| Etapa retorna 1 com `failed`, saída ausente, inválida ou sem fechamento | Interromper com 1. |
+| Validação retorna 1 com publicação válida e fechamento `failed` | Avançar, conservar o estado da origem e manter resultado geral 1; sem aprovadas, construir dataset vazio. |
+| Outra etapa retorna 1 com `failed`, ou a saída é ausente, inválida ou sem fechamento | Interromper com 1. |
 | Etapa retorna 2 | Interromper com 2. |
 | Cancelamento ou término anormal do filho | Interromper, encerrar/recolher o filho e retornar 1. |
 
@@ -80,6 +81,8 @@ Validar a publicação com os leitores existentes do formato correspondente, nã
 Mapeamento dos leitores: descoberta → `triage.load_discovery`; triagem → `extraction_input.load_triage`; extração → `validation_input.load_extraction`; validação → `validation_format.validate_output_records`. Usar seus estados e validações, sem promover pendências. Deduplicação e construção não publicam sucesso parcial: retorno 1 nessas etapas interrompe o pipeline.
 
 O código final é 0 se todas as etapas selecionadas concluírem sem parcialidade, 1 se houver parcialidade ou falha operacional e 2 em recusa de argumentos/configuração. Um dataset produzido a partir de etapas parciais não transforma o resultado geral em sucesso completo.
+
+**Revisão aprovada em 2026-11-18:** a exceção para validação `failed` substitui a regra anterior de interrupção obrigatória. Permite concluir com dataset vazio sem promover decisões científicas; o código geral continua 1. O resolvedor de receitas e as verificações de integridade permanecem obrigatórios.
 
 ## Preservação dos artefatos
 

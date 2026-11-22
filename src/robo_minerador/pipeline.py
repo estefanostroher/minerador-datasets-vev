@@ -129,9 +129,9 @@ def main(argv=None):
                 break
             if code == 1 and stage in STAGES[:4]:
                 after = _content_hash(path)
-                if after is not None and after != before and pipeline_status.accept_partial(stage, path):
+                if after is not None and after != before and pipeline_status.accept_publication(stage, path):
                     result = 1
-                    print(f'{stage}: publicação parcial íntegra; continuando.')
+                    print(f'{stage}: publicação íntegra com pendências; continuando.')
                     continue
             result = 1
             print(f'{stage}: execução interrompida.')
