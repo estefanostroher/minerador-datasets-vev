@@ -167,7 +167,7 @@ def configure_instrument(workspace, verified, recipe, executor):
     bootstrap_argv. O executor possui a área temporária até close(). Fontes originais
     e lockfiles não são escritos; apenas namespace próprio é criado no volume.
     """
-    if workspace.bootstrap_argv or workspace.instrument_mount or workspace.next_phase != 2 or workspace.first_failure:
+    if workspace.bootstrap_argv or workspace.instrument_volume or workspace.next_phase != 2 or workspace.first_failure:
         raise InstrumentUnavailable("Instrumento requer instalação/preparação concluídas uma única vez.")
     if _hash(recipe) != workspace.recipe_sha256 or verified["snapshot"] != verified["snapshot_artifact"].reference():
         raise InstrumentUnavailable("Receita ou snapshot diverge do workspace.")
@@ -212,9 +212,10 @@ def configure_instrument(workspace, verified, recipe, executor):
         (root / "settings.json").write_bytes(settings_bytes)
         executor.write_workspace_files(workspace, {prefix + "/identity.json": _json_bytes(settings["identity"])})
         executor.register_instrument_directory(directory)
-        workspace.instrument_mount = str(root)
+        workspace.instrument_volume = executor.publish_instrument(workspace, root)
         workspace.bootstrap_argv = ("node", "/instrument/validation-command.mjs")
         return InstrumentSession(workspace, prefix, plan, instrument_id, installations, hashlib.sha256(settings_bytes).hexdigest(), packages)
-    except BaseException:
+    except BaseException as error:
+        workspace.first_failure = {"kind": "infrastructure", "daemon_error": str(error)}
         directory.cleanup()
         raise

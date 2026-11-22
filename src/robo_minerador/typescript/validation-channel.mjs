@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 
 /** Lê apenas configuração do instrumento em montagem confiável readonly. */
 export function settings() {
-  const value = JSON.parse(fs.readFileSync(new URL('./settings.json', import.meta.url), 'utf8'));
+  const value = JSON.parse(fs.readFileSync('/instrument/settings.json', 'utf8'));
   return value;
 }
 

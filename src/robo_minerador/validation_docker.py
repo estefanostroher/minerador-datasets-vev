@@ -9,8 +9,12 @@ from datetime import datetime, timezone
 import json
 import base64
 import hashlib
+import io
+import os
 from pathlib import Path
+import stat
 import subprocess
+import tarfile
 import tempfile
 import threading
 import time
@@ -110,6 +114,8 @@ class DockerExecutor:
         self.clock = clock
         self.run_id = uuid.uuid4().hex
         self._cancelled = threading.Event()
+        self._resource_lock = threading.RLock()
+        self._start_lock = threading.Lock()
         self._containers = set()
         self._volumes = set()
         self._logs = tempfile.TemporaryDirectory(prefix="robo-validation-")
@@ -143,16 +149,30 @@ class DockerExecutor:
 
     def _volume(self):
         """Reserva volume nomeado exclusivo e rotulado antes de qualquer materialização."""
-        name = "robo-validation-" + self.run_id + "-" + uuid.uuid4().hex
-        self._volumes.add(name)
-        self._cli(["volume", "create", "--label", LABEL + "=" + self.run_id, name])
-        return name
+        with self._resource_lock:
+            if self._closed or self._cancelled.is_set():
+                raise DockerInfrastructureError("Executor encerrado ou cancelado.")
+            name = "robo-validation-" + self.run_id + "-" + uuid.uuid4().hex
+            self._volumes.add(name)
+            self._cli(["volume", "create", "--label", LABEL + "=" + self.run_id, name])
+            return name
 
     def _create(self, recipe, argv, *, volume=None, network="none", cwd="/", environment=None,
-                tool_volume=None, instrument_mount=None, writable_tools=False):
+                tool_volume=None, instrument_volume=None, writable_tools=False, writable_instrument=False):
         """Cria container com limites, rede e montagens explícitas, sem entrypoint da imagem."""
+        with self._resource_lock:
+            return self._create_locked(recipe, argv, volume=volume, network=network, cwd=cwd,
+                                       environment=environment, tool_volume=tool_volume,
+                                       instrument_volume=instrument_volume, writable_tools=writable_tools,
+                                       writable_instrument=writable_instrument)
+
+    def _create_locked(self, recipe, argv, *, volume, network, cwd, environment, tool_volume,
+                       instrument_volume, writable_tools, writable_instrument):
+        """Registra e cria o container sem permitir limpeza concorrente."""
         if self._closed or self._cancelled.is_set():
             raise DockerInfrastructureError("Executor encerrado ou cancelado.")
+        if instrument_volume is not None and instrument_volume not in self._volumes:
+            raise ValueError("Volume do instrumento não pertence a este executor.")
         limits = validate_validation_limits(recipe["limits"])
         name = "robo-validation-" + self.run_id + "-" + uuid.uuid4().hex
         self._containers.add(name)
@@ -169,11 +189,9 @@ class DockerExecutor:
         if tool_volume:
             args += ["--mount", "type=volume,src=" + tool_volume + ",dst=/tools,volume-nocopy"
                      + ("" if writable_tools else ",readonly")]
-        if instrument_mount:
-            source = str(Path(instrument_mount).resolve(strict=True))
-            if "," in source:
-                raise ValueError("Caminho do instrumento contém separador de montagem.")
-            args += ["--mount", "type=bind,src=" + source + ",dst=/instrument,readonly"]
+        if instrument_volume:
+            args += ["--mount", "type=volume,src=" + instrument_volume + ",dst=/instrument,volume-nocopy"
+                     + ("" if writable_instrument else ",readonly")]
         # env -i elimina também variáveis da imagem; nenhuma variável Windows entra no container.
         args += [recipe["image"], "-i", "PATH=" + PATH, "HOME=/tmp/robo-home",
                  *[key + "=" + value for key, value in sorted((environment or {}).items())], *argv]
@@ -193,12 +211,13 @@ class DockerExecutor:
 
     def _remove(self, name):
         """Remove apenas container registrado, preservando erro de limpeza para auditoria."""
-        if name in self._containers:
-            try:
-                self._cli(["rm", "--force", name])
-                self._containers.remove(name)
-            except DockerInfrastructureError as error:
-                self.cleanup_errors.append({"resource": name, "error": str(error)})
+        with self._resource_lock:
+            if name in self._containers:
+                try:
+                    self._cli(["rm", "--force", name])
+                    self._containers.remove(name)
+                except DockerInfrastructureError as error:
+                    self.cleanup_errors.append({"resource": name, "error": str(error)})
 
     def _execute(self, name, cid, deadline, metadata):
         """Captura streams em disco e recolhe inspect/OOM inclusive após timeout/cancelamento."""
@@ -215,18 +234,23 @@ class DockerExecutor:
         self._active.set()
         try:
             with stdout.open("wb") as out, stderr.open("wb") as err:
-                event["cancelled"] = self._cancelled.is_set()
-                event["timeout"] = self.clock() >= deadline
-                if event["cancelled"] or event["timeout"]:
-                    return event
-                process = subprocess.Popen([self.docker, "start", "--attach", name], stdout=out,
-                                           stderr=err, stdin=subprocess.DEVNULL, shell=False)
+                with self._start_lock:
+                    event["cancelled"] = self._cancelled.is_set()
+                    event["timeout"] = self.clock() >= deadline
+                    if event["cancelled"] or event["timeout"]:
+                        return event
+                    process = subprocess.Popen([self.docker, "start", "--attach", name], stdout=out,
+                                               stderr=err, stdin=subprocess.DEVNULL, shell=False)
                 event["pid"] = process.pid
                 while process.poll() is None:
                     event["cancelled"] = self._cancelled.is_set()
                     event["timeout"] = self.clock() >= deadline
                     if event["cancelled"] or event["timeout"]:
-                        self._cli(["kill", name])
+                        try:
+                            self._cli(["kill", name])
+                        except DockerInfrastructureError:
+                            # O daemon ainda pode estar iniciando; rm --force impede um start tardio.
+                            self._remove(name)
                         break
                     time.sleep(0.02)
                 process.wait(timeout=10)
@@ -269,8 +293,10 @@ class DockerExecutor:
                     event[key + "_bytes"] = path.stat().st_size
                 except OSError as error:
                     event["capture_loss"] = str(error)
-            self.events.append(event)
-            self._active.clear()
+            with self._start_lock:
+                event["cancelled"] = event["cancelled"] or self._cancelled.is_set()
+                self.events.append(event)
+                self._active.clear()
             if self._cancelled.is_set():
                 self._release_resources()
         return event
@@ -463,8 +489,60 @@ for(const p of JSON.parse(process.argv[1])){
                 for path, content in json.loads(self.read_log(event)).items()}
 
     def register_instrument_directory(self, directory):
-        """Assume limpeza de área temporária confiável montada readonly pela T3."""
+        """Assume limpeza da área temporária confiável da T3."""
         self._instrument_resources.append(directory)
+
+    def publish_instrument(self, workspace, root):
+        """Transfere e verifica todos os arquivos confiáveis antes de liberar o volume."""
+        from .validation_workspace import _add, _safe_path
+        if workspace.run_id != self.run_id or workspace.volume not in self._volumes:
+            raise ValueError("Workspace não pertence a este executor.")
+        root = Path(root)
+        if not stat.S_ISDIR(root.lstat().st_mode) or root.is_symlink():
+            raise ValueError("Raiz do instrumento inválida.")
+        manifest = {}
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode="w", format=tarfile.PAX_FORMAT) as archive:
+            for directory, dirs, files in os.walk(root, followlinks=False):
+                for name in sorted(dirs + files):
+                    path = Path(directory) / name
+                    relative = _safe_path(path.relative_to(root).as_posix().encode())
+                    mode = path.lstat().st_mode
+                    if stat.S_ISDIR(mode):
+                        continue
+                    if not stat.S_ISREG(mode):
+                        raise ValueError("Instrumento contém link ou arquivo especial.")
+                    content = path.read_bytes()
+                    manifest[relative] = hashlib.sha256(content).hexdigest()
+                    _add(archive, relative, content)
+        script = r"""
+const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
+const expected=JSON.parse(fs.readFileSync('/tmp/manifest.json','utf8')),seen=[];
+function visit(dir){for(const name of fs.readdirSync(dir)){
+ const p=path.join(dir,name),s=fs.lstatSync(p),relative=path.relative('/instrument',p).split(path.sep).join('/');
+ if(s.isDirectory())visit(p);else if(s.isFile()){
+  if(!Object.hasOwn(expected,relative)||crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex')!==expected[relative])throw Error('instrument bytes: '+relative);
+  seen.push(relative);
+ }else throw Error('instrument file type: '+relative);
+}}
+visit('/instrument');if(seen.length!==Object.keys(expected).length)throw Error('instrument incomplete');
+console.log(JSON.stringify({verified_files:seen.length}));
+"""
+        volume = self._volume()
+        argv = ["node", "-e", script]
+        name, cid = self._create(workspace.recipe(), argv, instrument_volume=volume, writable_instrument=True)
+        try:
+            self._cli(["cp", "-", name + ":/instrument"], data=stream.getvalue(), timeout=300)
+            manifest_stream = io.BytesIO()
+            with tarfile.open(fileobj=manifest_stream, mode="w") as archive:
+                _add(archive, "manifest.json", json.dumps(manifest).encode())
+            self._cli(["cp", "-", name + ":/tmp"], data=manifest_stream.getvalue())
+            event = self._execute(name, cid, self.clock() + 300, {"kind": "infrastructure", "argv": argv})
+            if not self._success(event):
+                raise DockerInfrastructureError("Falha na verificação do instrumento: " + self.read_log(event, "stderr").decode(errors="replace"))
+            return volume
+        finally:
+            self._remove(name)
 
     def write_workspace_files(self, workspace, files):
         """Grava somente arquivos novos no namespace exclusivo da T3, sem fontes originais.
@@ -592,7 +670,7 @@ for(const relative of JSON.parse(process.argv[1])){
                     name, cid = self._create(frozen, argv, volume=workspace.volume, network=network,
                                              cwd="/workspace" + ("" if command["cwd"] == "." else "/" + command["cwd"]),
                                              environment=environment, tool_volume=workspace.tool_volume,
-                                             instrument_mount=workspace.instrument_mount if phase == "unit_suite" else None)
+                                             instrument_volume=workspace.instrument_volume if phase == "unit_suite" else None)
                     event = self._execute(name, cid, deadline, metadata)
             except DockerInfrastructureError as error:
                 event = self._not_started(metadata, error=str(error))
@@ -607,25 +685,23 @@ for(const relative of JSON.parse(process.argv[1])){
 
     def cancel(self):
         """Sinaliza cancelamento e mata containers próprios; close remove volumes após coleta."""
-        self._cancelled.set()
-        for name in list(self._containers):
-            try:
-                self._cli(["kill", name])
-            except DockerInfrastructureError as error:
-                self.cleanup_errors.append({"resource": name, "error": str(error)})
-        if not self._active.is_set():
+        with self._start_lock:
+            self._cancelled.set()
+            active = self._active.is_set()
+        if not active:
             self._release_resources()
 
     def _release_resources(self):
         """Recolhe containers/volumes próprios mantendo logs disponíveis para publicação."""
-        for name in list(self._containers):
-            self._remove(name)
-        for name in list(self._volumes):
-            try:
-                self._cli(["volume", "rm", name])
-                self._volumes.remove(name)
-            except DockerInfrastructureError as error:
-                self.cleanup_errors.append({"resource": name, "error": str(error)})
+        with self._resource_lock:
+            for name in list(self._containers):
+                self._remove(name)
+            for name in list(self._volumes):
+                try:
+                    self._cli(["volume", "rm", name])
+                    self._volumes.remove(name)
+                except DockerInfrastructureError as error:
+                    self.cleanup_errors.append({"resource": name, "error": str(error)})
 
     def close(self):
         """Remove somente recursos próprios e spools; erros ficam em cleanup_errors."""

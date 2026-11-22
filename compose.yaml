@@ -1,0 +1,11 @@
+services:
+  minerador:
+    build: .
+    init: true
+    stop_grace_period: 5m
+    environment:
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+    volumes:
+      - ./results:/app/results
+      - ./.cache/robo-minerador/snapshots:/app/.cache/robo-minerador/snapshots
+      - /var/run/docker.sock:/var/run/docker.sock

@@ -17,7 +17,7 @@ from .validation_recipe import _hash, _validate_recipe
 class ValidationWorkspace:
     """Retém identidade, receita congelada e montagens próprias para as fases.
 
-    recipe_json é a especificação canônica anterior à execução. instrument_mount
+    recipe_json é a especificação canônica anterior à execução. instrument_volume
     e bootstrap_argv permitem à T3 montar instrumento confiável em /instrument
     somente leitura e envolver argv originais sem editar comandos da receita.
     """
@@ -31,7 +31,7 @@ class ValidationWorkspace:
     manifest: list
     environment: dict
     tool_volume: str | None = None
-    instrument_mount: str | None = None
+    instrument_volume: str | None = None
     bootstrap_argv: tuple = ()
     instrument_environment: dict = field(default_factory=dict)
     next_phase: int = 0

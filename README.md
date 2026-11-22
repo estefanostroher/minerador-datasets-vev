@@ -31,7 +31,37 @@ Após a otimização aprovada, uma única coleta real em memória de cinco candi
 
 O arquivo `results/01_descoberta.jsonl` do pesquisador permanece intacto, com os metadados antigos válidos como registro histórico. A medição nova não o substituiu; uma nova gravação depende de opção explícita do usuário por `--overwrite`. A alteração passou pelas revisões de aderência e qualidade e pela verificação local do coordenador.
 
-## Instalação e execução
+## Pipeline com Docker Compose
+
+Use Docker Desktop com mecanismo Linux ou Docker Engine Linux e Docker Compose v2. O daemon deve estar iniciado e oferecer limites de CPU, memória e swap para a validação. A imagem contém Python 3.12, Git, Node.js, npm, TypeScript 6.0.3 e Docker CLI. O coordenador acessa o daemon pelo socket; os containers de validação não recebem esse socket nem o token.
+
+Configure `GITHUB_TOKEN` no ambiente do terminal antes de descoberta, triagem, extração ou `--all`, sem imprimir o valor. Validação, deduplicação e construção do dataset não exigem token; deduplicação e construção operam offline, enquanto a validação pode precisar de rede. Por exemplo, se o token já estiver definido nas variáveis de usuário do Windows:
+
+```powershell
+$env:GITHUB_TOKEN = [Environment]::GetEnvironmentVariable('GITHUB_TOKEN', 'User')
+docker compose run --rm --build minerador --help
+```
+
+Na raiz do checkout, escolha as etapas desejadas:
+
+```powershell
+docker compose run --rm minerador --discover 100
+docker compose run --rm minerador --triage
+docker compose run --rm minerador --extract
+docker compose run --rm minerador --validate
+docker compose run --rm minerador --deduplicate
+docker compose run --rm minerador --build-dataset
+docker compose run --rm minerador --extract --validate
+docker compose run --rm minerador --all 100
+```
+
+`--discover` e `--all` aceitam quantidade positiva opcional; sem quantidade usam **1000**. `--all` executa todas as etapas na ordem; seletores combinados executam apenas as escolhidas, na ordem do pipeline. Cada etapa precisa das entradas produzidas anteriormente. Para substituir saídas existentes, acrescente `--overwrite`; sem ele, o coordenador recusa antes de iniciar qualquer etapa selecionada. Não há retomada automática.
+
+As saídas persistem em `./results` no host e os snapshots em `./.cache/robo-minerador/snapshots`; preserve ambos para reprodução. O código final **0** indica sucesso, **1** indica parcialidade aceita ou falha operacional/interrupção, e **2** indica argumentos, entrada/configuração ou saída recusados. Um resultado `partial` íntegro e recém-publicado nas quatro primeiras etapas pode permitir continuação; consulte os diagnósticos de cada arquivo.
+
+O Compose concede cinco minutos para encerramento. Na primeira interrupção, o Python aguarda o filho sem prazo para permitir limpeza; uma segunda interrupção força o encerramento. Um SIGKILL externo, inclusive após expirar o prazo do Compose, pode interromper essa limpeza.
+
+## Instalação e execução local
 
 Requer Python **3.11 ou superior**. Execute os comandos PowerShell na raiz do projeto. O uso direto do executável da `.venv` dispensa ativação do ambiente.
 

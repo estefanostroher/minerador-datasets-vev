@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import tarfile
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -14,7 +15,7 @@ import pytest
 from robo_minerador.config import validate_validation_limits
 from robo_minerador.git_transport import BARE_CONFIG, GitTransport
 from robo_minerador.snapshot_store import SnapshotArtifact, SnapshotStore
-from robo_minerador.validation_docker import DockerExecutor, LABEL
+from robo_minerador.validation_docker import DockerExecutor, DockerInfrastructureError, LABEL
 from robo_minerador.validation_recipe import _hash, load_recipes
 from robo_minerador.validation_workspace import prepare_workspace, ValidationWorkspace
 
@@ -105,6 +106,167 @@ def _workspace(executor, recipe):
     executor._volumes.add("owned")
     return ValidationWorkspace("owned", executor.run_id, recipe["repository_id"], recipe["commit_sha"],
                                json.dumps(recipe), _hash(recipe), [], {})
+
+
+def test_instrument_volume_upload_and_ownership(tmp_path, monkeypatch):
+    recipe = deepcopy(next(iter(load_recipes()["recipes"].values())))
+    executor = DockerExecutor()
+    workspace = _workspace(executor, recipe)
+    (tmp_path / "settings.json").write_bytes(b'{"fixture":true}')
+    (tmp_path / "nested").mkdir()
+    (tmp_path / "nested" / "data").write_bytes(b'\x00\xff')
+    calls = []
+    def cli(args, **kwargs):
+        calls.append((args, kwargs))
+        return b"cid"
+    monkeypatch.setattr(executor, "_cli", cli)
+    monkeypatch.setattr(executor, "_inspect", lambda name: {"HostConfig": {
+        "NanoCpus": 4_000_000_000, "Memory": 8589934592, "MemorySwap": 8589934592, "NetworkMode": "none"}})
+    monkeypatch.setattr(executor, "_execute", lambda *args: {"exitcode": 0})
+    volume = executor.publish_instrument(workspace, tmp_path)
+    upload = next(kwargs["data"] for args, kwargs in calls if args[:2] == ["cp", "-"])
+    with tarfile.open(fileobj=io.BytesIO(upload)) as archive:
+        assert archive.extractfile("settings.json").read() == b'{"fixture":true}'
+        assert archive.extractfile("nested/data").read() == b'\x00\xff'
+    manifests = [kwargs["data"] for args, kwargs in calls if args[:2] == ["cp", "-"] and args[-1].endswith(":/tmp")]
+    assert len(manifests) == 1
+    with tarfile.open(fileobj=io.BytesIO(manifests[0])) as archive:
+        hashes = json.load(archive.extractfile("manifest.json"))
+    assert hashes["settings.json"] == hashlib.sha256(b'{"fixture":true}').hexdigest()
+    create = next(args for args, _ in calls if args[0] == "create")
+    assert f"type=volume,src={volume},dst=/instrument,volume-nocopy" in create
+    assert str(tmp_path) not in str(create) and "type=bind" not in str(create)
+    with pytest.raises(ValueError):
+        executor._create(recipe, ["true"], instrument_volume="foreign")
+    executor._create(recipe, ["true"], instrument_volume=volume)
+    assert f"type=volume,src={volume},dst=/instrument,volume-nocopy,readonly" in calls[-1][0]
+    executor.close()
+
+
+@pytest.mark.parametrize("kind", ["volume", "container"])
+def test_cancel_waits_for_resource_creation_before_cleanup(monkeypatch, kind):
+    recipe = deepcopy(next(iter(load_recipes()["recipes"].values())))
+    executor = DockerExecutor()
+    entered, resume, cleanup_entered = threading.Event(), threading.Event(), threading.Event()
+    existing = set()
+    errors = []
+    original_release = executor._release_resources
+
+    def release():
+        cleanup_entered.set()
+        original_release()
+
+    def cli(args, **kwargs):
+        if (kind == "volume" and args[:2] == ["volume", "create"]) or (kind == "container" and args[0] == "create"):
+            entered.set()
+            assert resume.wait(10)
+            existing.add(args[-1] if kind == "volume" else args[args.index("--name") + 1])
+            return b"cid"
+        if args[:2] == ["volume", "rm"] or args[:2] == ["rm", "--force"]:
+            name = args[-1]
+            if name not in existing:
+                raise DockerInfrastructureError("resource not yet created")
+            existing.remove(name)
+        return b""
+
+    monkeypatch.setattr(executor, "_cli", cli)
+    monkeypatch.setattr(executor, "_release_resources", release)
+    monkeypatch.setattr(executor, "_inspect", lambda name: {"HostConfig": {
+        "NanoCpus": 4_000_000_000, "Memory": 8589934592, "MemorySwap": 8589934592, "NetworkMode": "none"}})
+    def create():
+        try:
+            executor._volume() if kind == "volume" else executor._create(recipe, ["true"])
+        except DockerInfrastructureError as error:
+            errors.append(error)
+    creator = threading.Thread(target=create)
+    canceller = threading.Thread(target=executor.cancel)
+    try:
+        creator.start()
+        assert entered.wait(10)
+        canceller.start()
+        assert cleanup_entered.wait(10)
+    finally:
+        resume.set()
+        creator.join(10)
+        if canceller.ident is not None:
+            canceller.join(10)
+    assert not creator.is_alive() and not canceller.is_alive()
+    assert not existing and not executor._volumes and not executor._containers
+    assert not executor.cleanup_errors
+    executor.close()
+
+
+@pytest.mark.parametrize("failure", ["upload", "verify"])
+def test_instrument_publication_failure_cleans_owned_resources(tmp_path, monkeypatch, failure):
+    recipe = deepcopy(next(iter(load_recipes()["recipes"].values())))
+    executor = DockerExecutor()
+    workspace = _workspace(executor, recipe)
+    (tmp_path / "settings.json").write_bytes(b"settings")
+    calls = []
+    def cli(args, **kwargs):
+        calls.append(args)
+        if failure == "upload" and args[0] == "cp":
+            raise DockerInfrastructureError("upload failed")
+        return b"cid"
+    monkeypatch.setattr(executor, "_cli", cli)
+    monkeypatch.setattr(executor, "_inspect", lambda name: {"HostConfig": {
+        "NanoCpus": 4_000_000_000, "Memory": 8589934592, "MemorySwap": 8589934592, "NetworkMode": "none"}})
+    monkeypatch.setattr(executor, "_execute", lambda *args: {"exitcode": 1})
+    monkeypatch.setattr(executor, "read_log", lambda *args: b"verification failed")
+    with pytest.raises(DockerInfrastructureError):
+        executor.publish_instrument(workspace, tmp_path)
+    assert workspace.instrument_volume is None and not workspace.bootstrap_argv
+    volumes = executor._volumes - {"owned"}
+    assert len(volumes) == 1 and any(args[0] == "rm" for args in calls)
+    executor.close()
+    assert ["volume", "rm", next(iter(volumes))] in calls
+
+
+def test_instrument_rejects_symlink(tmp_path, monkeypatch):
+    recipe = deepcopy(next(iter(load_recipes()["recipes"].values())))
+    executor = DockerExecutor()
+    workspace = _workspace(executor, recipe)
+    try:
+        (tmp_path / "link").symlink_to(tmp_path, target_is_directory=True)
+    except OSError:
+        pytest.skip("Criação de symlink indisponível neste host")
+    monkeypatch.setattr(executor, "_cli", lambda *args, **kwargs: b"")
+    with pytest.raises(ValueError, match="link"):
+        executor.publish_instrument(workspace, tmp_path)
+    executor.close()
+
+
+def test_configure_cleans_temporary_directory_when_publication_fails(tmp_path, monkeypatch):
+    from robo_minerador import validation_instrument as instrument
+    recipe = deepcopy(next(iter(load_recipes()["recipes"].values())))
+    executor = DockerExecutor()
+    workspace = _workspace(executor, recipe)
+    workspace.next_phase = 2
+    artifact = SimpleNamespace(repository_id=workspace.repository_id, commit_sha=workspace.commit_sha,
+                               reference=lambda: "snapshot")
+    verified = {"snapshot": "snapshot", "snapshot_artifact": artifact,
+                "context": {"files": []}, "instances": {}}
+    helper = tmp_path / "helper"
+    compiler = helper / "node_modules" / "typescript"
+    compiler.mkdir(parents=True)
+    (compiler / "package.json").write_text('{"version":"6.0.3"}')
+    monkeypatch.setattr(instrument, "HELPER", helper)
+    monkeypatch.setattr(instrument, "_command_packages", lambda *args: [])
+    monkeypatch.setattr(instrument.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=b"{}"))
+    monkeypatch.setattr(executor, "collect_dependencies", lambda workspace: {"packages": [{"name": "vitest", "path": "node_modules/vitest/package.json"}]})
+    monkeypatch.setattr(executor, "inspect_instrument_installations", lambda *args: [{"tools": {"node": "22.23.4", "vitest": recipe["tools"]["vitest"], "vite": "7.3.6"}}])
+    monkeypatch.setattr(executor, "write_workspace_files", lambda *args: None)
+    paths = []
+    def fail(workspace, root):
+        paths.append(root)
+        raise DockerInfrastructureError("upload failed")
+    monkeypatch.setattr(executor, "publish_instrument", fail)
+    monkeypatch.setattr(executor, "_cli", lambda *args, **kwargs: b"")
+    with pytest.raises(DockerInfrastructureError):
+        instrument.configure_instrument(workspace, verified, recipe, executor)
+    assert not paths[0].exists() and not workspace.bootstrap_argv and workspace.instrument_volume is None
+    assert executor.run_phase(workspace, "unit_suite", recipe)["status"] == "not_started"
+    executor.close()
 
 
 def test_flags_deadline_first_failure_and_immutable_recipe(monkeypatch):
@@ -205,6 +367,116 @@ def test_timeout_capture_inspect_before_remove_and_cancel(monkeypatch):
     executor.close()
 
 
+def test_cancel_before_start_does_not_launch_or_kill_created_container(monkeypatch):
+    executor = DockerExecutor()
+    executor._containers.add("owned")
+    entered, resume = threading.Event(), threading.Event()
+    original_set = executor._active.set
+    def active_set():
+        original_set()
+        entered.set()
+        assert resume.wait(10)
+    monkeypatch.setattr(executor._active, "set", active_set)
+    calls, events = [], []
+    def cli(args, **kwargs):
+        calls.append(args)
+        if args[0] == "inspect":
+            return json.dumps([{"State": {"OOMKilled": False, "ExitCode": 0, "Running": False}}]).encode()
+        return b""
+    monkeypatch.setattr(executor, "_cli", cli)
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: pytest.fail("start after cancellation"))
+    worker = threading.Thread(target=lambda: events.append(executor._execute("owned", "cid", executor.clock() + 30, {})))
+    worker.start()
+    try:
+        assert entered.wait(10)
+        executor.cancel()
+    finally:
+        resume.set()
+        worker.join(10)
+    assert not worker.is_alive() and events[0]["cancelled"]
+    assert not any(args[0] == "kill" for args in calls)
+    assert not executor._containers
+    executor.close()
+
+
+def test_cancel_after_start_marks_fast_exit_cancelled(monkeypatch):
+    executor = DockerExecutor()
+    executor._containers.add("owned")
+    entered, resume = threading.Event(), threading.Event()
+    events, calls = [], []
+    class Process:
+        pid = 42
+        returncode = 0
+        def __init__(self, *args, **kwargs):
+            entered.set()
+            assert resume.wait(10)
+        def poll(self):
+            assert executor._cancelled.wait(10)
+            return 0
+        def wait(self, timeout=None):
+            return 0
+    def cli(args, **kwargs):
+        calls.append(args)
+        if args[0] == "inspect":
+            return json.dumps([{"State": {"OOMKilled": False, "ExitCode": 0, "Running": False}}]).encode()
+        return b""
+    monkeypatch.setattr(subprocess, "Popen", Process)
+    monkeypatch.setattr(executor, "_cli", cli)
+    worker = threading.Thread(target=lambda: events.append(executor._execute("owned", "cid", executor.clock() + 30, {})))
+    canceller = threading.Thread(target=executor.cancel)
+    worker.start()
+    try:
+        assert entered.wait(10)
+        canceller.start()
+    finally:
+        resume.set()
+        worker.join(10)
+        if canceller.ident is not None:
+            canceller.join(10)
+    assert not worker.is_alive() and not canceller.is_alive()
+    assert events[0]["cancelled"] and not executor._success(events[0])
+    assert not executor._containers and any(args[0] == "rm" for args in calls)
+    executor.close()
+
+
+def test_cancel_during_daemon_start_removes_not_yet_running_container(monkeypatch):
+    executor = DockerExecutor()
+    executor._containers.add("owned")
+    launched = threading.Event()
+    events, calls = [], []
+    class Process:
+        pid = 42
+        returncode = None
+        def __init__(self, *args, **kwargs):
+            launched.set()
+        def poll(self):
+            assert executor._cancelled.wait(10)
+            return self.returncode
+        def wait(self, timeout=None):
+            self.returncode = 1
+        def kill(self):
+            self.returncode = 1
+    def cli(args, **kwargs):
+        calls.append(args)
+        if args[0] == "kill":
+            raise DockerInfrastructureError("container is not running")
+        if args[0] == "inspect":
+            raise DockerInfrastructureError("container removed")
+        return b""
+    monkeypatch.setattr(subprocess, "Popen", Process)
+    monkeypatch.setattr(executor, "_cli", cli)
+    worker = threading.Thread(target=lambda: events.append(executor._execute("owned", "cid", executor.clock() + 30, {})))
+    worker.start()
+    try:
+        assert launched.wait(10)
+        executor.cancel()
+    finally:
+        worker.join(10)
+    assert not worker.is_alive() and events[0]["cancelled"]
+    assert ["rm", "--force", "owned"] in calls and not executor._containers
+    executor.close()
+
+
 def test_aggregate_deadline_does_not_start_another_command(monkeypatch):
     """Esgotar o orçamento do primeiro passo impede criar o segundo container."""
     recipe = deepcopy(next(iter(load_recipes()["recipes"].values())))
@@ -246,6 +518,48 @@ def test_limits_reject_coercion(value):
 
 
 @pytest.mark.skipif(os.environ.get("ROBO_TEST_DOCKER") != "1", reason="Fixture Docker real exige opt-in explícito.")
+@pytest.mark.parametrize("filename", ["settings.json", "validation-command.mjs"])
+def test_real_instrument_verifier_rejects_corrupted_upload(tmp_path, monkeypatch, filename):
+    recipe = deepcopy(next(iter(load_recipes()["recipes"].values())))
+    executor = DockerExecutor()
+    root = tmp_path / "instrument"
+    root.mkdir()
+    (root / "settings.json").write_bytes(b'{"fixture":true}')
+    (root / "validation-command.mjs").write_bytes(b"export const fixture = true;\n")
+    real_cli = executor._cli
+    corrupted = []
+    def cli(args, **kwargs):
+        result = real_cli(args, **kwargs)
+        if args[:2] == ["cp", "-"] and args[-1].endswith(":/tmp"):
+            payload = io.BytesIO()
+            with tarfile.open(fileobj=payload, mode="w") as archive:
+                data = b"corrupted bytes"
+                entry = tarfile.TarInfo(filename)
+                entry.size = len(data)
+                archive.addfile(entry, io.BytesIO(data))
+            real_cli(["cp", "-", args[-1].removesuffix(":/tmp") + ":/instrument"], data=payload.getvalue())
+            corrupted.append(filename)
+        return result
+
+    try:
+        executor.preflight()
+        workspace_volume = executor._volume()
+        workspace = ValidationWorkspace(workspace_volume, executor.run_id, recipe["repository_id"], recipe["commit_sha"],
+                                        json.dumps(recipe), _hash(recipe), [], {})
+        monkeypatch.setattr(executor, "_cli", cli)
+        with pytest.raises(DockerInfrastructureError, match="instrument bytes: " + filename):
+            executor.publish_instrument(workspace, root)
+        assert corrupted == [filename]
+        assert workspace.instrument_volume is None and not workspace.bootstrap_argv
+        assert all(event["kind"] != "candidate" for event in executor.events)
+    finally:
+        executor.close()
+    assert not executor.cleanup_errors
+    assert real_cli(["ps", "-aq", "--filter", "label=" + LABEL + "=" + executor.run_id]) == b""
+    assert real_cli(["volume", "ls", "-q", "--filter", "label=" + LABEL + "=" + executor.run_id]) == b""
+
+
+@pytest.mark.skipif(os.environ.get("ROBO_TEST_DOCKER") != "1", reason="Fixture Docker real exige opt-in explícito.")
 def test_real_linux_identity_isolation_limits_and_process_cleanup(source, tmp_path):
     """Inspeciona isolamento real sem alocar 8 GiB nem instalar dependências candidatas."""
     executor = DockerExecutor()
@@ -277,13 +591,13 @@ const client=net.connect(server.address().port,'127.0.0.1');client.on('data',()=
     # Validação de catálogo continua exigindo npm ci; o handle da fixture é congelado após materialização.
     workspace = prepare_workspace(source.store, source.verified, source.recipe, executor)
     workspace.recipe_json, workspace.recipe_sha256 = json.dumps(recipe), _hash(recipe)
-    workspace.instrument_mount = str(tmp_path)
     (tmp_path / "bootstrap.cjs").write_text(
         "// Envolve comando original como fixture confiável, sem alterar seus argumentos.\n"
         "const cp=require('node:child_process');"
         "console.log('trusted-bootstrap');"
         "const argv=process.argv.slice(2);"
         "const r=cp.spawnSync(argv[0],argv.slice(1),{stdio:'inherit'});process.exit(r.status??1);", encoding="utf-8")
+    workspace.instrument_volume = executor.publish_instrument(workspace, tmp_path)
     workspace.bootstrap_argv = ("node", "/instrument/bootstrap.cjs")
     os.environ["ROBO_HOST_SECRET"] = "must-not-be-inherited"
     try:

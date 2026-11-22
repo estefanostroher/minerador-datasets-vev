@@ -1,6 +1,7 @@
 import { transformSource, sourceHash } from './validation-transform.mjs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { readFileSync } from 'node:fs';
 
 /** Cria plugin sem substituir include/exclude/setup/aliases/projects/concurrency.
  * O bootstrap ainda precisa incorporar o plugin às configurações originais e
@@ -13,6 +14,14 @@ export function createValidationPlugin(plans, root, reportLimitation, reportTran
   return {
     name: 'robo-minerador-validation-v1',
     enforce: 'pre',
+    /** Serve apenas módulos do instrumento verificado, montado fora da raiz Vite. */
+    load(id) {
+      if (new Set(['/instrument/validation-entry.mjs', '/instrument/validation-channel.mjs',
+        '/instrument/validation-runner.mjs', '/instrument/validation-runtime.mjs']).has(id)) {
+        return readFileSync(id, 'utf8');
+      }
+      return null;
+    },
     /** Mantém transformação em memória e exige hash exato dos bytes originais. */
     transform(source, id) {
       const clean = id.split('?')[0];
