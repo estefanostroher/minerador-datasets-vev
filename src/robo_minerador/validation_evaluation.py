@@ -637,6 +637,8 @@ def evaluate_repository(group, resolution, execution, *, policy_version=1):
             criteria[key] = _phase_criterion(phases[phase])
             criteria[key]["required"] = True
     criteria["complete_unit_suite"] = _suite_criterion(observation, phases.get("unit_suite", {}))
+    if execution.get("context_failure"):
+        criteria["required_preparation"] = criterion(code="OBSERVATION_UNAVAILABLE", message="Contexto da receita automática não foi verificado.")
     if not pair:
         criteria["no_external_services"] = evaluate_resources(recipe, verified, execution.get("resource_evidence"), observation, environment)
     decision = aggregate(criteria)

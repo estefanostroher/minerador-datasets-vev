@@ -7,6 +7,7 @@ from test_validation_local import unrelated_failure
 from robo_minerador.validation_evaluation import evaluate_repository
 from robo_minerador.validation_format import validate_output_records
 from robo_minerador.validation_recipe import resolve_recipe
+from test_validation_recipe_provenance import automatic, context_publications  # noqa: F401
 
 
 @pytest.mark.parametrize("audit", ["disabled", "unknown", "rejected", "error"])
@@ -172,3 +173,41 @@ def test_replay_provenance_is_strictly_validated(monkeypatch, tmp_path, tamper):
         provenance["policy"] = replay[0]["policy"]
     with pytest.raises(ValueError):
         validate_output_records(replay)
+
+
+@pytest.mark.parametrize('missing', [False, True])
+def test_historical_replay_never_resolves_or_converts_recipe(monkeypatch, tmp_path, missing):
+    from robo_minerador import validation, validation_recipe_resolver, validation_resources
+    from robo_minerador.snapshot_store import SnapshotStore
+    from robo_minerador.validation_replay import replay_pair_records
+
+    if missing:
+        group, catalog, source, execution = controlled_fixture((4,))
+        monkeypatch.setattr(validation, 'load_repository_context', lambda *args: execution['verified'])
+        rows = list(validation.validate_repositories([group], source,
+                    {'recipes': {}, 'sha256': catalog['sha256']}, FixtureExecutor(execution), object(), policy_version=1))
+        assert rows[1]['recipe']['code'] == 'RECIPE_NOT_FOUND'
+    else:
+        rows, _, _ = published_fixture(monkeypatch, tmp_path, counts=(4,))
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('Replay chamou resolvedor, store ou helper')
+
+    monkeypatch.setattr(validation_recipe_resolver, 'resolve_effective_recipe', forbidden)
+    monkeypatch.setattr(SnapshotStore, 'open_verified', forbidden)
+    monkeypatch.setattr(validation_resources, '_analyze', forbidden)
+    replay = replay_pair_records(rows, source_path='historical.jsonl', source_sha256='a' * 64)
+    assert replay[1]['recipe'] == rows[1]['recipe']
+    assert 'provenance' not in replay[1]['recipe']
+    if missing:
+        assert replay[1]['recipe']['code'] == 'RECIPE_NOT_FOUND'
+        assert replay[1]['recipe']['recipe'] is None
+        assert replay[2]['decision'] != 'approved'
+
+
+def test_automatic_resolution_without_dynamic_evidence_does_not_approve(context_publications):
+    rows = context_publications['UNAVAILABLE']
+    assert rows[1]['recipe']['resolution_status'] == 'resolved'
+    assert rows[1]['recipe']['provenance']['kind'] == 'automatic'
+    assert rows[2]['decision'] == 'not_evaluated'
+    assert validate_output_records(rows)['instance_decisions']['approved'] == 0

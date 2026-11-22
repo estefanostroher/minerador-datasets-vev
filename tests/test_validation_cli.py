@@ -40,7 +40,7 @@ def test_zero_candidates_without_token_or_external_tools(monkeypatch, cli_paths,
     assert rows[0]["source"]["eligible_count"] == 0
 
 
-@pytest.mark.parametrize("failure", ["input", "catalog", "limits", "git", "node", "docker"])
+@pytest.mark.parametrize("failure", ["input", "catalog", "policy", "limits", "git", "node", "docker"])
 def test_invalid_prerequisites_preserve_output_even_with_overwrite(monkeypatch, cli_paths, failure, capsys):
     """Impede truncamento por entrada/configuração/preflight inválidos e fecha executor precoce."""
     cli_paths.write_bytes(b"previous-output\r\n")
@@ -53,6 +53,10 @@ def test_invalid_prerequisites_preserve_output_even_with_overwrite(monkeypatch, 
 
     monkeypatch.setattr(cli, "load_extraction", invalid if failure == "input" else lambda p: ([group], source))
     monkeypatch.setattr(cli, "load_recipes", invalid if failure == "catalog" else lambda: catalog)
+    if failure == "policy":
+        policy = cli_paths.parent / "invalid-policy.json"
+        policy.write_text('{"version": 999}', encoding="utf-8")
+        monkeypatch.setattr(cli, "load_recipe_policy", lambda: validation.load_recipe_policy(policy))
     monkeypatch.setattr(cli, "GitTransport", lambda: SimpleNamespace(preflight=invalid if failure == "git" else lambda: None))
     monkeypatch.setattr(cli, "preflight", invalid if failure == "node" else lambda: None)
     monkeypatch.setattr(executor, "preflight", invalid if failure == "docker" else lambda: None, raising=False)

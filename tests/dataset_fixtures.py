@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from copy import deepcopy
 
 import pytest
 
@@ -76,6 +77,25 @@ def dataset_chain(monkeypatch, tmp_path):
     instance = next(row for row in rows if row['record_type'] == 'instance')
     assert repository['decision'] == 'rejected'
     assert instance['instance_id'] == instance_id and instance['decision'] == 'approved'
+    return _chain(tmp_path, extraction, output, rows, instance_id)
+
+
+@pytest.fixture
+def automatic_dataset_chain(monkeypatch, tmp_path):
+    """Publicação sintética aprovada com envelope automático portátil."""
+    extraction, output, rows, instance_id = positive_inputs(monkeypatch, tmp_path, mutate=unrelated_failure)
+    repository = next(row for row in rows if row['record_type'] == 'repository')
+    recipe = repository['recipe']['recipe']
+    inputs = {item['path']: '1' * 64 for item in recipe['evidence']}
+    inputs.update({item['path']: item['sha256'] for item in recipe['lockfiles']})
+    repository['recipe']['provenance'] = {
+        'kind': 'automatic', 'resolver_version': 'snapshot_npm_v1', 'policy_sha256': '2' * 64,
+        'snapshot': deepcopy(repository['snapshot']), 'rule': 'single_npm_local_vitest_v1',
+        'inputs': [{'path': path, 'sha256': inputs[path]} for path in sorted(inputs, key=lambda p: p.encode())],
+        'evidence': deepcopy(recipe['evidence']),
+        'environment_profile': {'image': recipe['image'], 'platform': recipe['platform'],
+                                **recipe['tools'], 'vite': '7.3.6'},
+    }
     return _chain(tmp_path, extraction, output, rows, instance_id)
 
 

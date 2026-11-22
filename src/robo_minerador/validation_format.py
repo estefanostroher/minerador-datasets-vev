@@ -15,6 +15,7 @@ from .validation_evaluation import (REPOSITORY_CRITERIA, INSTANCE_CRITERIA, aggr
                                     PAIR_INSTANCE_CRITERIA, PAIR_REPOSITORY_CRITERIA, PAIR_POLICY)
 from .validation_evidence import _json_value, case_identity
 from .validation_recipe import _hash as recipe_hash, _validate_recipe, _path
+from .validation_recipe_provenance import validate_recipe_provenance, valid_snapshot
 
 
 STATES = ("approved", "rejected", "not_evaluated")
@@ -125,6 +126,20 @@ def _repository(record, *, rederive_diagnostic_resources=True, resource_scope=No
     _require(type(resolution) is dict and resolution.get("resolution_status") in {"resolved", "not_evaluated"}
              and _hash(resolution.get("catalog_sha256")), "Resolução de receita inválida.")
     recipe = resolution.get("recipe")
+    if "provenance" in resolution:
+        _require(pair, "Proveniência automática exige schema v3.")
+        validate_recipe_provenance(resolution, record, snapshot)
+    context_failure = pair and "provenance" in resolution and recipe is not None and snapshot is None
+    if context_failure:
+        _require(resolution["resolution_status"] == "resolved" and record.get("environment") == {}
+                 and record.get("lockfiles") == [] and record.get("unit_suite") == {}
+                 and record.get("resource_universe") is None and record.get("resource_evidence") is None
+                 and not record.get("instance_resource_evidence")
+                 and record.get("unit_suite_summary", {}).get("observation_complete") is False
+                 and record.get("decision") == "not_evaluated"
+                 and all(record["criteria"][key]["status"] == "not_evaluated" for key in
+                         ("reproducible_environment", "dependency_installation", "required_preparation", "complete_unit_suite")),
+                 "Falha de contexto com evidência dinâmica.")
     if recipe is not None:
         _validate_recipe(recipe)
         _require(recipe.get("repository_id") == record["repository_id"] and recipe.get("commit_sha") == record["commit_sha"]
@@ -160,6 +175,17 @@ def _repository(record, *, rederive_diagnostic_resources=True, resource_scope=No
         _require(type(phase) is dict and phase.get("phase") == name and type(phase.get("required")) is bool
                  and phase.get("status") in {"not_started", "completed", "failed"}
                  and type(phase.get("commands")) is list, "Resultado de fase inválido.")
+        if context_failure:
+            planned = recipe["phases"][name]
+            pending = phase.get("not_started_commands")
+            _require(phase["status"] == "not_started" and "start" in phase and "end" in phase
+                     and phase["start"] is None and phase["end"] is None
+                     and ("cause" not in phase or type(phase["cause"]) is str and bool(phase["cause"]))
+                     and phase["commands"] == [] and phase["required"] == bool(planned)
+                     and type(pending) is list and len(pending) == len(planned)
+                     and all(type(item) is dict and {k: item.get(k) for k in command} == command
+                             and item.get("status") == "not_started" and type(item.get("cause")) is str and bool(item["cause"])
+                             for item, command in zip(pending, planned)), "Fase executada após falha de contexto.")
         for command in phase["commands"]:
             _require(type(command) is dict and type(command.get("argv")) is list and bool(command["argv"])
                      and all(type(arg) is str for arg in command["argv"]) and type(command.get("cwd")) is str
@@ -342,6 +368,11 @@ def _instance(record, repository, resource_scope=None):
     pair = record["schema_version"] == 3
     local = record["schema_version"] >= 2
     _criteria(record, PAIR_INSTANCE_CRITERIA if pair else LOCAL_INSTANCE_CRITERIA if local else INSTANCE_CRITERIA)
+    if pair and repository.get("snapshot") is None and repository["recipe"].get("recipe") is not None and "provenance" in repository["recipe"]:
+        _require(record.get("decision") == "not_evaluated"
+                 and all(value["status"] == "not_evaluated" for value in record["criteria"].values())
+                 and record.get("test_cases", {}).get("count_kind") == "unknown",
+                 "Instância avaliada após falha de contexto.")
     _require(record.get("repository_ref") == repository["repository_id"], "Referência de repositório divergente.")
     if local:
         _require(record["criteria"]["execution_prerequisites"] == execution_prerequisites(repository["criteria"]), "Pré-requisitos individuais divergentes.")
@@ -567,6 +598,26 @@ def _validate_output_records(records):
     for repository in repositories:
         local = [r for r in instances if r["repository_id"] == repository["repository_id"]]
         _require(local and _counts(repository["instance_decisions"]) and repository["instance_decisions"] == decision_counts(local), "Soma local divergente.")
+        resolution = repository["recipe"]
+        if repository["schema_version"] == 3 and "provenance" in resolution and resolution.get("recipe") is not None and repository["snapshot"] is None:
+            analysis = resolution["provenance"]["snapshot"]
+            def context_diagnostic(row):
+                if not (row.get("record_type") == "diagnostic" and row.get("repository_id") == repository["repository_id"]
+                        and row.get("operational") is True and row.get("phase") == "context"
+                        and row.get("code") in {"RECIPE_CONTEXT_UNAVAILABLE", "RECIPE_CONTEXT_MISMATCH"}
+                        and type(row.get("message")) is str and bool(row["message"])):
+                    return False
+                evidence = row.get("evidence")
+                if type(evidence) is not dict or set(evidence) != {"analysis_snapshot", "observed_snapshot", "cause"}:
+                    return False
+                cause, observed = evidence["cause"], evidence["observed_snapshot"]
+                return (valid_snapshot(evidence["analysis_snapshot"], repository)
+                        and evidence["analysis_snapshot"] == analysis and type(cause) is dict
+                        and set(cause) == {"code", "message"}
+                        and all(type(cause[k]) is str and bool(cause[k]) for k in cause)
+                        and (observed is None if row["code"] == "RECIPE_CONTEXT_UNAVAILABLE" else
+                             type(observed) is dict and valid_snapshot(observed, observed) and observed != analysis))
+            _require(any(context_diagnostic(row) for row in records), "Falha de contexto sem diagnóstico coerente.")
         if operational_issues(repository):
             _require(any(r.get("record_type") == "diagnostic" and r.get("repository_id") == repository["repository_id"]
                          and r.get("operational") is True for r in records), "Impedimento operacional sem diagnóstico local.")

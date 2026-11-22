@@ -3,7 +3,7 @@ import hashlib
 
 import pytest
 
-from dataset_fixtures import dataset_chain  # noqa: F401
+from dataset_fixtures import dataset_chain, automatic_dataset_chain  # noqa: F401
 from robo_minerador.dataset_input import load_dataset_inputs
 
 
@@ -83,3 +83,13 @@ def test_empty_and_sorted_representatives(prepared):
     assert inputs == before
     inputs['candidates'] = []
     assert build_dataset(inputs, {}, builder_version='1') == []
+
+
+def test_automatic_dataset_uses_approved_representative(automatic_dataset_chain):
+    paths, identity = automatic_dataset_chain
+    inputs = load_dataset_inputs(*(paths[name] for name in ('discovery', 'triage', 'extraction', 'validation', 'deduplication')))
+    assert [candidate['unit']['instance_id'] for candidate in inputs['candidates']] == [identity]
+    candidate = inputs['candidates'][0]
+    assert candidate['validation_instance']['decision'] == 'approved'
+    assert candidate['representative']['decision'] == 'approved'
+    assert candidate['validation_repository']['recipe']['provenance']['kind'] == 'automatic'

@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from dataset_fixtures import dataset_chain  # noqa: F401
+from dataset_fixtures import dataset_chain, automatic_dataset_chain  # noqa: F401
 from robo_minerador.dataset import build_dataset
 from robo_minerador.dataset_input import load_dataset_inputs
 
@@ -35,6 +35,52 @@ def test_roundtrip_and_empty(dataset, tmp_path, monkeypatch):
     assert validate_dataset_records(explained) == 1
     path.write_bytes(b'')
     assert load_dataset(path) == []
+
+
+@pytest.fixture
+def automatic_dataset(automatic_dataset_chain):
+    paths, identity = automatic_dataset_chain
+    inputs = load_dataset_inputs(*(paths[name] for name in ('discovery', 'triage', 'extraction', 'validation', 'deduplication')))
+    function = inputs['candidates'][0]['unit']['function']
+    measurements = {identity: {
+        'size': {'status': 'available', 'physical_lines': function['end_line'] - function['start_line'] + 1, 'method': 'original_declaration_physical_lines_v1', 'reason': None},
+        'cyclomatic_complexity': {'status': 'available', 'value': 2, 'method': 'typescript_ast_decisions_v1', 'reason': None},
+    }}
+    return build_dataset(inputs, measurements, builder_version='1.2'), inputs
+
+
+def test_automatic_recipe_survives_dataset_roundtrip(automatic_dataset, tmp_path):
+    from robo_minerador.dataset_format import load_dataset
+    rows, inputs = automatic_dataset
+    recipe = inputs['candidates'][0]['validation_repository']['recipe']
+    assert inputs['candidates'][0]['validation_instance']['decision'] == 'approved'
+    assert rows[0]['environment']['recipe'] == rows[0]['validation']['repository_evidence']['recipe'] == recipe
+    assert recipe['provenance']['kind'] == 'automatic'
+    path = tmp_path / 'automatic.jsonl'
+    path.write_text(json.dumps(rows[0]) + '\n', encoding='utf-8')
+    assert load_dataset(path) == rows
+
+
+@pytest.mark.parametrize('damage', ['one_copy', 'identity', 'lock_hash', 'recipe_hash'])
+def test_automatic_recipe_corruption_is_rejected(automatic_dataset, tmp_path, damage):
+    from robo_minerador.dataset_format import load_dataset
+    rows, _ = automatic_dataset
+    row = copy.deepcopy(rows[0])
+    recipe = row['validation']['repository_evidence']['recipe']
+    if damage == 'one_copy':
+        row['environment']['recipe'] = copy.deepcopy(row['environment']['recipe'])
+        row['environment']['recipe']['provenance']['policy_sha256'] = '3' * 64
+    else:
+        if damage == 'identity': recipe['provenance']['snapshot']['repository_id'] += 1
+        if damage == 'lock_hash':
+            lock = recipe['recipe']['lockfiles'][0]
+            next(item for item in recipe['provenance']['inputs'] if item['path'] == lock['path'])['sha256'] = '0' * 64
+        if damage == 'recipe_hash': recipe['recipe_sha256'] = '0' * 64
+        row['environment']['recipe'] = copy.deepcopy(recipe)
+    path = tmp_path / 'corrupt-automatic.jsonl'
+    path.write_text(json.dumps(row) + '\n', encoding='utf-8')
+    with pytest.raises(ValueError):
+        load_dataset(path)
 
 
 @pytest.mark.parametrize('corruption', ['observed_status', 'observed_duplicate', 'case_detail', 'case_duplicate', 'original_tests'])

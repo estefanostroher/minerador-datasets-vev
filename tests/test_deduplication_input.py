@@ -303,3 +303,19 @@ def test_real_reader_rejects_missing_closing(tmp_path, monkeypatch):
     path.write_text("\n".join(json.dumps(row) for row in rows[:-1]) + "\n", encoding="utf-8")
     with pytest.raises(ValueError):
         reader.load_deduplication_inputs(path, tmp_path / "missing-extraction.jsonl")
+
+
+def test_automatic_validation_integrity_checked_before_selection(automatic_dataset_chain):
+    paths, identity = automatic_dataset_chain
+    candidates, _ = reader.load_deduplication_inputs(paths['validation'], paths['extraction'])
+    assert [item['unit']['instance_id'] for item in candidates] == [identity]
+    rows = [json.loads(line) for line in paths['validation'].read_text(encoding='utf-8').splitlines()]
+    repository = next(row for row in rows if row['record_type'] == 'repository')
+    assert repository['recipe']['provenance']['kind'] == 'automatic'
+    repository['recipe']['provenance']['snapshot']['repository_id'] += 1
+    paths['validation'].write_text('\n'.join(json.dumps(row) for row in rows) + '\n', encoding='utf-8')
+    with pytest.raises(ValueError):
+        reader.load_deduplication_inputs(paths['validation'], paths['extraction'])
+
+
+from dataset_fixtures import automatic_dataset_chain  # noqa: F401, E402

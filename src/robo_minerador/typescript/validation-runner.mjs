@@ -21,7 +21,7 @@ export function createValidationRunner(BaseRunner, options) {
   const version = options.tools?.vitest;
   const node = process.versions.node;
   const tested = (version === '4.1.10' && node === '22.23.4' && ['7.3.6', '8.3.6'].includes(options.tools.vite))
-    || (version === '4.1.11' && node === '22.23.4' && ['8.3.0', '8.3.6'].includes(options.tools.vite))
+    || (version === '4.1.11' && node === '22.23.4' && ['8.3.0', '8.3.6', '8.0.16'].includes(options.tools.vite))
     || (version === '5.0.5' && node === '24.22.2' && ['8.3.4', '8.3.6'].includes(options.tools.vite))
     || (version === '5.0.5' && node === '26.13.0' && ['8.3.5', '8.3.6'].includes(options.tools.vite));
   if (!tested || options.tools.node !== node

@@ -10,6 +10,7 @@ from .validation_evaluation import operational_issues, PAIR_POLICY
 from .validation_format import utc_now, encode_bytes, decision_counts, run_result
 from .validation_instrument import configure_instrument
 from .validation_recipe import resolve_recipe
+from .validation_recipe_resolver import load_recipe_policy, resolve_effective_recipe
 from .validation_workspace import prepare_workspace
 
 
@@ -87,21 +88,58 @@ def validate_repositories(groups, source, catalog, executor=None, store=None, *,
             store = store or SnapshotStore()
             if getattr(executor, "daemon", None) is None:
                 executor.preflight()
+        policy = load_recipe_policy() if policy_version == 2 else None
+        planned = []
+        for group in groups:
+            if policy_version == 1:
+                planned.append((resolve_recipe(group["repository"], catalog), []))
+                continue
+            try:
+                planned.append(resolve_effective_recipe(group["repository"], catalog, store, policy))
+            except (OSError, RuntimeError) as error:
+                resolution = resolve_recipe(group["repository"], catalog)
+                resolution.update(resolution_status="not_evaluated", recipe=None, recipe_sha256=None,
+                                  code=getattr(error, "code", "AUTO_RECIPE_INPUT_UNSUPPORTED"))
+                planned.append((resolution, [{"code": resolution["code"], "message": str(error) or type(error).__name__, "evidence": {}}]))
         limits = [{"repository_id": group["repository"]["repository_id"],
-                   "limits": deepcopy(catalog.get("recipes", {}).get((group["repository"]["repository_id"], group["repository"]["commit_sha"]), {}).get("limits"))}
-                  for group in groups]
+                   "limits": deepcopy((resolution.get("recipe") or {}).get("limits"))}
+                  for group, (resolution, _) in zip(groups, planned)]
         yield record("run_started", source=deepcopy(source), policy=deepcopy(PAIR_POLICY) if policy_version == 2 else {"suite_passes": 1, "minimum_valid_cases": 4,
                       "no_corrective_retries": True, "instance_execution_scope": "associated_declarations_and_module_hooks",
                        "resource_gate_scope": "associated_closure_v1"}, limits=limits, miner_version="0.1.0", instrument_protocol_version=1)
-        for group in groups:
-            resolution = resolve_recipe(group["repository"], catalog)
+        for group, (resolution, resolution_diagnostics) in zip(groups, planned):
             recipe = resolution.get("recipe")
             execution = {"phases": {p: _not_started(recipe, p, "Pré-requisito ainda não comprovado.") for p in PHASES}}
-            diagnostics = []
+            diagnostics = [record("diagnostic", repository_id=group["repository"]["repository_id"],
+                                  phase="recipe", operational=True, **item) for item in resolution_diagnostics]
             event_start = len(getattr(executor, "events", []))
             try:
-                execution["verified"] = load_repository_context(group["instances"], group["repository"], group["reasons"], store)
-                if resolution["resolution_status"] == "resolved":
+                automatic = resolution.get("provenance") if recipe else None
+                try:
+                    verified = load_repository_context(group["instances"], group["repository"], group["reasons"], store)
+                except Exception as error:
+                    if not automatic:
+                        raise
+                    execution["context_failure"] = True
+                    diagnostics.append(record("diagnostic", repository_id=group["repository"]["repository_id"],
+                        code="RECIPE_CONTEXT_UNAVAILABLE", phase="context", operational=True,
+                        message="Contexto da receita automática indisponível.",
+                        evidence={"analysis_snapshot": deepcopy(automatic["snapshot"]), "observed_snapshot": None,
+                                  "cause": {"code": str(getattr(error, "code", "CONTEXT_UNAVAILABLE")) or "CONTEXT_UNAVAILABLE", "message": str(error) or type(error).__name__}}))
+                    verified = None
+                if automatic and verified is not None and verified.get("snapshot") != automatic["snapshot"]:
+                    execution["context_failure"] = True
+                    diagnostics.append(record("diagnostic", repository_id=group["repository"]["repository_id"],
+                        code="RECIPE_CONTEXT_MISMATCH", phase="context", operational=True,
+                        message="Snapshot do contexto diverge da análise da receita.",
+                        evidence={"analysis_snapshot": deepcopy(automatic["snapshot"]), "observed_snapshot": deepcopy(verified.get("snapshot")),
+                                  "cause": {"code": "SNAPSHOT_MISMATCH", "message": "Referências de snapshot divergentes."}}))
+                    verified = None
+                if verified is not None:
+                    execution["verified"] = verified
+                if execution.get("context_failure"):
+                    pass
+                elif resolution["resolution_status"] == "resolved":
                     workspace = prepare_workspace(store, execution["verified"], recipe, executor)
                     execution["environment"] = workspace.environment
                     for phase in ("installation", "preparation"):

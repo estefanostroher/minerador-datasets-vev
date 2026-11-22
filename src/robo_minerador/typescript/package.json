@@ -3,7 +3,14 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22" },
-  "scripts": { "test": "node --test tests/*.test.mjs" },
-  "dependencies": { "typescript": "6.0.3" }
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "semver": "7.7.2",
+    "typescript": "6.0.3"
+  }
 }

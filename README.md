@@ -6,7 +6,7 @@ Projeto de pesquisa para construir um dataset de funções e métodos TypeScript
 
 A **descoberta**, a **triagem estática** e a **extração estática concorrente** estão implementadas: pacote Python, CLI e uma saída JSONL por etapa. A descoberta encontra candidatos; a triagem inspeciona seus artefatos no SHA selecionado; a extração identifica funções/métodos, documentação original e chamadas diretas em testes. Aprovação na extração permite avançar para validação, mas ainda não representa uma instância final do dataset. Essas três etapas não instalam dependências dos candidatos nem executam suas suítes.
 
-A **validação dinâmica** está implementada com CLI, receitas, executor Docker, instrumento Vitest e publicação por instância. A execução real mais recente avaliou 190 candidatas de seis origens: **4 aprovadas, 3 rejeitadas e 183 pendentes**, com estado `partial`. A aprovação comprova pelo menos quatro casos positivos associados à implementação original; a auditoria de recursos é exclusivamente diagnóstica.
+A **validação dinâmica** está implementada com CLI, receitas, executor Docker, instrumento Vitest e publicação por instância. Uma execução real histórica avaliou 190 candidatas de seis origens: **4 aprovadas, 3 rejeitadas e 183 pendentes**, com estado `partial`. Em outra execução posterior, a origem `1460677238` teve 13 candidatas pendentes por receita ausente e o 04 terminou `failed`; a resolução somente leitura posterior não substituiu esse arquivo. A aprovação comprova pelo menos quatro casos positivos associados à implementação original; a auditoria de recursos é exclusivamente diagnóstica.
 
 A **deduplicação exata** está implementada e produz um índice auditável, ainda não o dataset final. Na execução real registrada abaixo, as quatro instâncias aprovadas na validação foram representantes; não houve duplicatas nessa população.
 
@@ -22,6 +22,7 @@ A **construção do dataset** está implementada e foi executada sobre as public
 - [Contexto por instância — contrato](docs/superpowers/specs/2026-11-03-contexto-por-instancia-design.md) e [implementação e evidências](docs/superpowers/plans/2026-11-03-contexto-por-instancia.md)
 - [Extração v3 — contrato](docs/superpowers/specs/2026-11-03-snapshot-reutilizavel-design.md), [plano](docs/superpowers/plans/2026-11-03-snapshot-reutilizavel-extracao.md) e [evidências finais — 2026-11-04](docs/superpowers/plans/2026-11-04-extracao-v3-evidencias.md)
 - [Validação dinâmica — contrato](docs/superpowers/specs/2026-11-07-validacao-design.md) e [plano e registro de execução](docs/superpowers/plans/2026-11-07-validacao.md)
+- [Resolução automática de receitas — contrato](docs/superpowers/specs/2026-11-16-resolucao-automatica-receitas-design.md) e [plano e evidências](docs/superpowers/plans/2026-11-16-resolucao-automatica-receitas.md)
 - [Deduplicação exata — contrato](docs/superpowers/specs/2026-11-12-deduplicacao-design.md) e [plano](docs/superpowers/plans/2026-11-12-deduplicacao.md)
 - [Construção do dataset — contrato](docs/superpowers/specs/2026-11-14-construcao-dataset-design.md) e [plano](docs/superpowers/plans/2026-11-14-construcao-dataset.md)
 
@@ -405,7 +406,7 @@ Na construção real, o comando terminou com código **0** em **310,790 s**. O l
 
 ### Preparação e comando
 
-Python continua no host; **somente a validação usa Docker**. Havendo candidatas, requer Git, Node.js >=22 e o auxiliar confiável com TypeScript **6.0.3**, instalado pelo `npm ci --prefix ".\src\robo_minerador\typescript"` descrito acima. Essa instalação é do instrumento, separada dos manifestos/lockfiles candidatos. Em uma instalação por wheel, execute `npm ci --prefix` no diretório `robo_minerador/typescript` do pacote instalado. A wheel inclui receitas, auxiliares e lockfile confiável, sem `node_modules`, datasets ou cache.
+Na execução local direta, Python roda no host e a validação usa Docker; o pipeline Compose acima também permite executar o coordenador em container. Havendo candidatas na execução local, requer Git, Node.js >=22 e o auxiliar confiável com TypeScript **6.0.3**, instalado pelo `npm ci --prefix ".\src\robo_minerador\typescript"` descrito acima. Essa instalação é do instrumento, separada dos manifestos/lockfiles candidatos. Em uma instalação por wheel, execute `npm ci --prefix` no diretório `robo_minerador/typescript` do pacote instalado. A wheel inclui receitas, auxiliares e lockfile confiável, sem `node_modules`, datasets ou cache.
 
 Prepare manualmente o Docker Desktop com mecanismo **Linux** (ou Docker Engine Linux acessível pela CLI). A aplicação não inicia o Desktop. Confira o daemon antes do piloto autorizado:
 
@@ -445,7 +446,21 @@ Zero candidatas gera `completed` sem Git, Node, Docker, imagens, instalação ou
 
 ### Receitas e população atual
 
-O baseline inicial do 03 tinha **10 repositórios, 3.976 instâncias e estado `partial`**: 189 approved, 318 rejected e 3.469 not_evaluated. A tabela abaixo documenta suas 189 candidatas de seis origens; a execução mais recente recebeu 190 candidatas. Essas contagens são observações históricas, não regras fixas. As receitas em `src/robo_minerador/validation_recipes.json` vinculam ID/SHA, hashes de lockfiles, evidências originais e imagem imutável por digest:
+O catálogo tem precedência, inclusive para receitas pendentes. Na ausência legítima, o resolvedor analisa offline os metadados do snapshot verificado e pode gerar uma receita; conflito de identidade não aciona fallback. O subconjunto automático exige um único pacote npm na raiz ou aninhado, lock v3, configuração Vitest e confirmação documental reconhecidas, sem CI detectada ou locks externos ao pacote. Outros gerenciadores, workspaces, suítes mistas e configurações não reconhecidas podem permanecer pendentes. As receitas cadastradas preservam seu suporte anterior.
+
+O resolvedor usa perfis versionados e registra no envelope do 04 a origem automática, snapshot, hashes de entradas, regra e perfil. O leitor portátil verifica a coerência declarada, sem reexecutar a análise. `resolved` significa receita disponível, não validação aprovada. O executor ainda verifica contexto, ferramentas e instrumento; jsdom, setup e alias não são vetos automáticos, e o pool original não é forçado. A receita usa `npm ci` e `npm test`, preserva lifecycle e não inventa preparo ou retry corretivo.
+
+O perfil Node 22.23.4 / npm 10.9.9 / Vitest 4.1.11 / Vite 8.0.16 foi habilitado após prova em fixtures sintéticas reais; há outros perfis na política. Na resolução somente leitura da origem `1460677238`, houve receita `resolved` e zero diagnósticos, sem executar código candidato nem regravar o 04. O 04 dessa execução anterior continua `failed`; não há garantia de aprovação de suas 13 funções. As contagens históricas de outras execuções abaixo não descrevem esse 04.
+
+Para executar manualmente a validação pelo Compose, primeiro preserve uma cópia do `results/04_validacao.jsonl` e os snapshots. Depois, na raiz:
+
+```powershell
+docker compose run --rm --build minerador --validate --overwrite
+```
+
+Confira o 04 produzido antes de autorizar a substituição de 05 e 06; saídas antigas não representam uma validação nova.
+
+O baseline inicial do 03 tinha **10 repositórios, 3.976 instâncias e estado `partial`**: 189 approved, 318 rejected e 3.469 not_evaluated. A tabela abaixo documenta suas 189 candidatas de seis origens; outra execução histórica recebeu 190 candidatas. Essas contagens são observações históricas, não regras fixas. As receitas em `src/robo_minerador/validation_recipes.json` vinculam ID/SHA, hashes de lockfiles, evidências originais e imagem imutável por digest:
 
 | Origem | Candidatas | Node / gerenciador / Vitest | Escopo e situação da receita |
 | --- | ---: | --- | --- |
@@ -495,7 +510,7 @@ Novas execuções do 04 usam UTF-8/JSONL compacto com escapes ASCII e **`schema_
 
 **Replay offline já executado:** as 190 instâncias do 04 preservado foram reavaliadas das evidências salvas, sem nova execução de Vitest: **4 approved, 3 rejected e 183 not_evaluated**, contra 0/3/187 antes. As quatro aprovações retêm 11/12/13/12 testemunhas originais como limites inferiores. O JSONL v3 separado foi publicado em TEMP e aceito pelo leitor portátil após reabertura. Backup, hashes, metodologia, relatório por instância e comandos estão em [function-test-behavior-report.md](docs/superpowers/function-test-behavior-report.md). O 04 original permanece intacto. A população histórica da tabela de receitas acima é um baseline anterior; este replay usa o 03 vinculado ao 04, com 190 elegíveis.
 
-**Execução real posterior ao replay:** o `results/04_validacao.jsonl` atual terminou em **2026-11-08T18:25:27.950251+00:00**, também com **4 approved, 3 rejected e 183 not_evaluated**, seis diagnósticos operacionais e estado `partial`. Uma aprovação pertence a `HiAnur/anur-living-map` e três a `saching13/macrotracker-server`. Os JSONL de resultados são artefatos locais ignorados pelo Git.
+**Execução real histórica posterior ao replay:** o 04 terminou em **2026-11-08T18:25:27.950251+00:00**, também com **4 approved, 3 rejected e 183 not_evaluated**, seis diagnósticos operacionais e estado `partial`. Uma aprovação pertence a `HiAnur/anur-living-map` e três a `saching13/macrotracker-server`. A execução posterior da origem `1460677238` tem outro 04, `failed`, conforme descrito acima. Os JSONL de resultados são artefatos locais ignorados pelo Git.
 
 Publicam-se `run_started`, um `repository` por origem elegível, suas `instance`, diagnósticos e `run_finished`. Permanecem hash/estado/contagens do 03, receita, ambiente, comandos, critérios, witnesses e limitações. Fontes técnicas necessárias ao replay ficam compartilhadas no repositório, não repetidas por função. Evidências e logs são incorporados antes da limpeza. O diagnóstico global não encerra a avaliação individual; somente instâncias com todos os critérios pertinentes aprovados avançam.
 

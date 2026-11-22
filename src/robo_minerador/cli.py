@@ -21,6 +21,7 @@ from .extraction_input import load_triage
 from .git_transport import GitTransport
 from .jsonl import write_jsonl
 from .validation import validate_repositories
+from .validation_recipe_resolver import load_recipe_policy
 from .validation_docker import DockerExecutor
 from .validation_input import load_extraction
 from .validation_recipe import load_recipes
@@ -137,6 +138,7 @@ def _run_validation(args: argparse.Namespace) -> int:
                 return 2
             groups, source = load_extraction(input_path)
             catalog = load_recipes()
+            load_recipe_policy()
             if groups:
                 GitTransport().preflight()
                 preflight()

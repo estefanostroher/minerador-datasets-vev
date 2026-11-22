@@ -228,6 +228,177 @@ class FixtureExecutor:
         self.closed = True
 
 
+def test_pair_resolves_before_opening_and_uses_effective_limits(monkeypatch):
+    group, catalog, source, execution = controlled_fixture((4,))
+    envelope = resolve_recipe(group["repository"], catalog)
+    envelope["recipe"]["limits"]["memory_bytes"] += 1
+    calls = []
+    monkeypatch.setattr(validation, "resolve_effective_recipe", lambda *args: (calls.append("resolve") or envelope, []), raising=False)
+    monkeypatch.setattr(validation, "load_repository_context", lambda *args: pytest.fail("context loaded before opening"))
+    executor = FixtureExecutor(execution)
+    records = validation.validate_repositories([group], source, catalog, executor, object())
+    opening = next(records)
+    assert calls == ["resolve"]
+    assert opening["limits"][0]["limits"] == envelope["recipe"]["limits"]
+    records.close()
+    assert executor.closed
+
+
+@pytest.mark.parametrize("failure", ["unavailable", "mismatch"])
+def test_automatic_context_failure_publishes_valid_pending_result(monkeypatch, failure):
+    from recipe_resolution_fixtures import memory_snapshot
+
+    group, _, source, execution = controlled_fixture((4,))
+    context, store = memory_snapshot()
+    group["repository"] = {"repository_id": 900000001, "repository_url": "https://github.com/fixture/new",
+                           "commit_sha": "0" * 40, **context}
+    catalog = {"recipes": {}, "sha256": "d" * 64}
+    executor = FixtureExecutor(execution)
+    calls = []
+    def load(*args):
+        calls.append("load")
+        if failure == "unavailable":
+            raise OSError("snapshot unavailable")
+        observed = deepcopy(context["context"]["snapshot"])
+        observed["tree_oid"] = "f" * 40
+        return {"snapshot": observed}
+    monkeypatch.setattr(validation, "load_repository_context", load)
+    monkeypatch.setattr(validation, "prepare_workspace", lambda *args: pytest.fail("workspace started"))
+    monkeypatch.setattr(validation, "configure_instrument", lambda *args: pytest.fail("instrument started"))
+    rows = list(validation.validate_repositories([group], source, catalog, executor, store))
+    repository = next(row for row in rows if row["record_type"] == "repository")
+    diagnostic = next(row for row in rows if row.get("code") == "RECIPE_CONTEXT_" + failure.upper())
+    assert calls == ["load"] and executor.calls == []
+    assert repository["recipe"]["resolution_status"] == "resolved"
+    assert rows[0]["limits"][0]["limits"] == repository["recipe"]["recipe"]["limits"]
+    assert repository["snapshot"] is None and repository["environment"] == {} and repository["lockfiles"] == []
+    assert all(phase["status"] == "not_started" and not phase["commands"] for phase in repository["execution"].values())
+    assert repository["criteria"]["required_preparation"]["status"] == "not_evaluated"
+    assert diagnostic["evidence"]["analysis_snapshot"] == context["context"]["snapshot"]
+    assert validate_output_records(rows) == rows[-1]
+    corrupted = deepcopy(rows)
+    corrupted.remove(next(row for row in corrupted if row.get("code") == diagnostic["code"]))
+    corrupted[-1]["operational_errors"] -= 1
+    with pytest.raises(ValueError):
+        validate_output_records(corrupted)
+    for key, value in (("cause", {"code": "", "message": "erro"}),
+                       ("observed_snapshot", None if failure == "mismatch" else context["context"]["snapshot"])):
+        corrupted = deepcopy(rows)
+        next(row for row in corrupted if row.get("code") == diagnostic["code"])["evidence"][key] = value
+        with pytest.raises(ValueError):
+            validate_output_records(corrupted)
+
+
+def test_mixed_groups_resolve_before_opening_without_loading_contexts(monkeypatch):
+    from recipe_resolution_fixtures import memory_snapshot
+
+    group, catalog, source, execution = controlled_fixture((4,))
+    context, store = memory_snapshot()
+    automatic = deepcopy(group)
+    automatic["repository"] = {"repository_id": 900000001, "repository_url": "https://github.com/fixture/new",
+                               "commit_sha": "0" * 40, **context}
+    automatic["instances"] = [{"instance_id": "1" * 64}]
+    pending = deepcopy(automatic)
+    pending["repository"] = {"repository_id": 900000002, "repository_url": "https://github.com/fixture/missing",
+                             "commit_sha": "1" * 40}
+    pending["instances"] = [{"instance_id": "2" * 64}]
+    source.update(input_count=3, repository_count=3, eligible_count=3, eligible_repository_count=3)
+    source["decisions"]["approved"] = 3
+    calls = []
+    def load(instances, repository, reasons, store):
+        calls.append(repository["repository_id"])
+        if repository["repository_id"] == 1:
+            return execution["verified"]
+        raise OSError("controlled unavailable")
+    monkeypatch.setattr(validation, "load_repository_context", load)
+    monkeypatch.setattr(validation, "prepare_workspace", lambda *args: SimpleNamespace(environment=execution["environment"]))
+    monkeypatch.setattr(validation, "configure_instrument", lambda *args: SimpleNamespace(collect=lambda *args: execution["observation"]))
+    executor = FixtureExecutor(execution)
+    records = validation.validate_repositories([automatic, group, pending], source, catalog, executor, store)
+    opening = next(records)
+    assert calls == []
+    rows = [opening, *records]
+    repositories = [row for row in rows if row["record_type"] == "repository"]
+    assert calls == [900000001, 1, 900000002]
+    assert executor.calls == ["installation", "preparation", "unit_suite"]
+    assert [row["limits"] for row in opening["limits"]] == [
+        row["recipe"]["recipe"]["limits"] if row["recipe"]["recipe"] else None for row in repositories]
+    assert [row["recipe"]["resolution_status"] for row in repositories] == ["resolved", "resolved", "not_evaluated"]
+    assert validate_output_records(rows) == rows[-1]
+
+
+def test_automatic_context_match_runs_each_phase_once(monkeypatch):
+    from recipe_resolution_fixtures import memory_snapshot
+
+    group, _, source, execution = controlled_fixture((4,))
+    context, store = memory_snapshot()
+    group["repository"] = {"repository_id": 900000001, "repository_url": "https://github.com/fixture/new",
+                           "commit_sha": "0" * 40, **context}
+    execution["verified"]["snapshot"] = deepcopy(context["context"]["snapshot"])
+    calls = []
+    monkeypatch.setattr(validation, "load_repository_context", lambda *args: calls.append("load") or execution["verified"])
+    monkeypatch.setattr(validation, "prepare_workspace", lambda *args: calls.append("workspace") or SimpleNamespace(environment=execution["environment"]))
+    monkeypatch.setattr(validation, "configure_instrument", lambda *args: calls.append("instrument") or SimpleNamespace(collect=lambda *args: execution["observation"]))
+    executor = FixtureExecutor(execution)
+    rows = list(validation.validate_repositories([group], source, {"recipes": {}, "sha256": "d" * 64}, executor, store))
+    assert calls == ["load", "workspace", "instrument"]
+    assert executor.calls == ["installation", "preparation", "unit_suite"]
+    assert rows[1]["snapshot"] == context["context"]["snapshot"]
+
+
+def test_preresolution_failure_is_local_and_owned_store_is_cancelled(monkeypatch):
+    group, catalog, source, execution = controlled_fixture((4,))
+    broken = deepcopy(group)
+    broken["repository"] = {"repository_id": 2, "repository_url": "https://github.com/fixture/missing", "commit_sha": "b" * 40}
+    broken["instances"] = [{"instance_id": "f" * 64}]
+    source.update(input_count=2, repository_count=2, eligible_count=2, eligible_repository_count=2)
+    source["decisions"]["approved"] = 2
+    calls = []
+    store = SimpleNamespace(cancel=lambda: calls.append("store_cancel"))
+    monkeypatch.setattr(validation, "SnapshotStore", lambda: store)
+    real_resolver = validation.resolve_effective_recipe
+    def resolve(repository, *args):
+        calls.append(repository["repository_id"])
+        if repository["repository_id"] == 2:
+            raise OSError("falha na análise")
+        return real_resolver(repository, *args)
+    monkeypatch.setattr(validation, "resolve_effective_recipe", resolve)
+    monkeypatch.setattr(validation, "load_repository_context", lambda *args: (_ for _ in ()).throw(OSError("sem contexto")))
+    executor = FixtureExecutor(execution)
+    rows = list(validation.validate_repositories([broken, group], source, catalog, executor))
+    repositories = [row for row in rows if row["record_type"] == "repository"]
+    assert calls == [2, 1, "store_cancel"]
+    assert repositories[0]["recipe"]["recipe"] is None
+    assert repositories[0]["recipe"]["catalog_sha256"] == catalog["sha256"]
+    assert repositories[1]["recipe"] == resolve_recipe(group["repository"], catalog)
+    assert validate_output_records(rows) == rows[-1]
+
+
+def test_cancel_after_preresolution_closes_owned_store(monkeypatch):
+    group, catalog, source, execution = controlled_fixture((4,))
+    calls = []
+    monkeypatch.setattr(validation, "SnapshotStore", lambda: SimpleNamespace(cancel=lambda: calls.append("store_cancel")))
+    executor = FixtureExecutor(execution)
+    records = validation.validate_repositories([group], source, catalog, executor)
+    assert next(records)["record_type"] == "run_started"
+    records.close()
+    assert calls == ["store_cancel"] and executor.closed and executor.calls == ["cancel"]
+
+
+def test_invalid_policy_before_opening_cleans_owned_resources(monkeypatch):
+    group, catalog, source, execution = controlled_fixture((4,))
+    calls = []
+    monkeypatch.setattr(validation, "SnapshotStore", lambda: SimpleNamespace(cancel=lambda: calls.append("store_cancel")))
+    def invalid():
+        raise ValueError("invalid policy")
+    monkeypatch.setattr(validation, "load_recipe_policy", invalid)
+    executor = FixtureExecutor(execution)
+    records = validation.validate_repositories([group], source, catalog, executor)
+    with pytest.raises(ValueError, match="invalid policy"):
+        next(records)
+    assert calls == ["store_cancel"] and executor.closed and executor.calls == ["cancel"]
+
+
 def published_fixture(monkeypatch, tmp_path, *, fail_first=False, counts=(4, 3), fail_all=False, mutate=None, policy_version=1):
     """Usa coordenador e escritor reais; substitui somente fronteiras T1/T2/T3."""
     group, catalog, source, execution = controlled_fixture(counts)

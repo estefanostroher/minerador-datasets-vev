@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "profiles": [
+    {"image": "node@sha256:539d4d5b9c0df96bb9d1229264d358dc816e8592cb8867828a580b527e7ad0fa", "platform": "linux/amd64", "node": "22.23.4", "npm": "10.9.9", "vitest": "4.1.10", "vite": "7.3.6"},
+    {"image": "node@sha256:539d4d5b9c0df96bb9d1229264d358dc816e8592cb8867828a580b527e7ad0fa", "platform": "linux/amd64", "node": "22.23.4", "npm": "10.9.9", "vitest": "4.1.11", "vite": "8.3.0"},
+    {"image": "node@sha256:539d4d5b9c0df96bb9d1229264d358dc816e8592cb8867828a580b527e7ad0fa", "platform": "linux/amd64", "node": "22.23.4", "npm": "10.9.9", "vitest": "4.1.11", "vite": "8.0.16"},
+    {"image": "node@sha256:6b9d4ea31e614e29f364bf75758458731eb1e105b80c99667438dd6b3fe262e0", "platform": "linux/amd64", "node": "24.22.2", "npm": "11.19.1", "vitest": "5.0.5", "vite": "8.3.4"},
+    {"image": "node@sha256:1d9e3c29bf8eae6becc330e2546d461b23c1a86ac9207d015b5ea8ba26cbe210", "platform": "linux/amd64", "node": "26.13.0", "npm": "11.20.0", "vitest": "5.0.5", "vite": "8.3.5"}
+  ],
+  "rules": {"scope": "single_npm_local_vitest_v1"},
+  "limits": {"max_files": 64, "max_nonlock_bytes": 1048576, "max_lock_bytes": 8388608, "max_total_bytes": 16777216, "helper_seconds": 30, "helper_stdout_bytes": 1048576}
+}
